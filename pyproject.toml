@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cutedsl"
+version = "0.1.0"
+description = "CuteDSL: Accelerated model inference via custom Triton/CUDA kernels"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2.0",
+    "triton>=3.0.0",
+    "safetensors>=0.4.0",
+    "einops>=0.7.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+chronos = [
+    "chronos-forecasting @ git+https://github.com/amazon-science/chronos-forecasting.git",
+    "transformers>=4.38.0",
+]
+benchmark = [
+    "pandas>=2.0.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "flake8>=7.0.0",
+]
+
+[project.scripts]
+cutedsl-convert = "cutechronos.convert:main"
+cutedsl-benchmark = "cutechronos.benchmark:main"
+
+[tool.setuptools.packages.find]
+include = ["cutechronos*"]
+
+[tool.pytest.ini_options]
+testpaths = ["cutechronos/tests"]
+markers = [
+    "model_required: tests that require the original chronos-forecasting package",
+]

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.o
+*.egg-info/
+dist/
+build/
+*.ninja_deps
+*.ninja_log
+.pytest_cache/
+.venv/
+*.json
+!pyproject.toml
