@@ -2,7 +2,9 @@
 
 Accelerated model inference via custom Triton and CUDA kernels. CuteDSL converts popular ML models into optimized versions with fused operations, custom attention kernels, and reduced memory allocations while maintaining output equivalence.
 
-## First Model: CuteChronos2
+![cutedsl.png](./cutedsl.png)
+
+## CuteChronos2
 
 [Amazon Chronos-2](https://github.com/amazon-science/chronos-forecasting) is a state-of-the-art time series forecasting model. CuteChronos2 is a from-scratch reimplementation with:
 
