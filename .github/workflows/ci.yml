@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: pip install ruff mypy
+      - name: Ruff check
+        run: ruff check .
+      - name: Mypy (cutechronos)
+        run: mypy cutechronos/ --ignore-missing-imports --check-untyped-defs
+      - name: Mypy (cutezimage)
+        run: mypy cutezimage/ --ignore-missing-imports --check-untyped-defs
+
+  test-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]" || pip install -e .
+          pip install pytest
+      - name: Run CPU-only tests
+        run: pytest -v -m "not model_required" -k "not cuda and not CUDA and not triton" --ignore=cutechronos/tests/test_pipeline.py
+
+  test-gpu:
+    runs-on: ubuntu-latest
+    # GPU tests require self-hosted runner with CUDA
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+          pip install pytest
+      - name: Run all tests
+        run: pytest -v --ignore=cutechronos/tests/test_pipeline.py
