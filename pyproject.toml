@@ -22,12 +22,19 @@ chronos = [
     "chronos-forecasting @ git+https://github.com/amazon-science/chronos-forecasting.git",
     "transformers>=4.38.0",
 ]
+zimage = [
+    "diffusers>=0.36.0",
+    "transformers>=4.38.0",
+    "accelerate>=1.0.0",
+]
 benchmark = [
     "pandas>=2.0.0",
+    "clean-fid>=0.1.35",
 ]
 dev = [
     "pytest>=8.0.0",
-    "flake8>=7.0.0",
+    "mypy>=1.8.0",
+    "ruff>=0.3.0",
 ]
 
 [project.scripts]
@@ -35,10 +42,29 @@ cutedsl-convert = "cutechronos.convert:main"
 cutedsl-benchmark = "cutechronos.benchmark:main"
 
 [tool.setuptools.packages.find]
-include = ["cutechronos*"]
+include = ["cutechronos*", "cutezimage*"]
 
 [tool.pytest.ini_options]
-testpaths = ["cutechronos/tests"]
+testpaths = ["cutechronos/tests", "cutezimage/tests"]
 markers = [
     "model_required: tests that require the original chronos-forecasting package",
 ]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["*.triton_kernels.*", "*.tests.*"]
+ignore_errors = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

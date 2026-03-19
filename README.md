@@ -171,6 +171,19 @@ On RTX 5090, Chronos-2 base (768 d_model, 12 layers), B=1 L=512:
 
 The compiled mode uses `torch.compile(mode="reduce-overhead")` which captures CUDA graphs for near-zero kernel launch overhead. This is the recommended mode for production inference with fixed input shapes.
 
+## Second Model: CuteZImage
+
+[Z-Image Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) is a fast text-to-image diffusion model. CuteZImage reimplements the transformer backbone with:
+
+- **Fused SiLU-gated FFN**: Eliminates the 10240-wide intermediate allocation
+- **Fused AdaLN + RMS Norm**: Timestep conditioning fused with normalization
+- **Complex-valued RoPE kernel**: Fused reshape + complex multiply + flatten
+- **RMS LayerNorm kernel**: Triton-accelerated T5-style normalization
+- **PyTorch SDPA attention**: Leverages FlashAttention v2 automatically
+- **from_diffusers() weight loading**: Load from any HuggingFace Z-Image checkpoint
+
+Architecture: 30 main layers + 2 refiner layers, dim=3840, 30 heads, SiLU-gated FFN (hidden=10240).
+
 ## Project Structure
 
 ```
@@ -202,9 +215,17 @@ cutedsl/
       test_model.py       # Model equivalence tests
       test_pipeline.py    # Pipeline API tests
       test_attention.py   # Attention kernel tests
-      test_rms_layernorm.py
-      test_rope.py
       ...
+  cutezimage/
+    model.py              # CuteZImageTransformer (30 layers + weight loading)
+    triton_kernels/
+      rms_norm.py         # RMS LayerNorm
+      fused_silu_gate_ffn.py  # SiLU + gating + FFN fusion
+      fused_adaln_norm.py # AdaLN + RMS norm fusion
+      rope_complex.py     # Complex-valued RoPE
+    tests/
+      test_model.py       # Model component tests
+      test_kernels.py     # Triton kernel correctness tests
 ```
 
 ## Adding New Models
