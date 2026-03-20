@@ -12,3 +12,12 @@ build/
 .venv/
 *.json
 !pyproject.toml
+
+# Vendored PyTorch (cloned for kernel reference, not committed)
+vendor/pytorch/
+
+# Benchmark artifacts
+benchmark_images/
+benchmark_results/
+*.png
+!cutedsl.png

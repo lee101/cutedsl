@@ -14,10 +14,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
+
+# Module-level constants matching diffusers transformer_z_image.py
+ADALN_EMBED_DIM = 256
+SEQ_MULTI_OF = 32
 
 
 # ---------------------------------------------------------------------------
@@ -40,13 +46,60 @@ class CuteZImageConfig:
     rope_theta: float = 256.0
     t_scale: float = 1000.0
     axes_dims: list[int] = field(default_factory=lambda: [32, 48, 48])
-    axes_lens: list[int] = field(default_factory=lambda: [1024, 512, 512])
+    axes_lens: list[int] = field(default_factory=lambda: [1536, 512, 512])
     hidden_dim: int = 0  # auto-computed
 
     def __post_init__(self):
         if self.hidden_dim == 0:
             self.hidden_dim = int(self.dim / 3 * 8)
         self.head_dim = self.dim // self.n_heads
+
+
+# ---------------------------------------------------------------------------
+# RopeEmbedder
+# ---------------------------------------------------------------------------
+
+class RopeEmbedder:
+    """Multi-axis RoPE frequency precomputation matching Z-Image's convention."""
+
+    def __init__(
+        self,
+        theta: float = 256.0,
+        axes_dims: list[int] | tuple[int, ...] = (16, 56, 56),
+        axes_lens: list[int] | tuple[int, ...] = (64, 128, 128),
+    ):
+        self.theta = theta
+        self.axes_dims = list(axes_dims)
+        self.axes_lens = list(axes_lens)
+        self.freqs_cis: list[torch.Tensor] | None = None
+
+    @staticmethod
+    def precompute_freqs_cis(
+        dim: list[int], end: list[int], theta: float = 256.0,
+    ) -> list[torch.Tensor]:
+        with torch.device("cpu"):
+            freqs_cis = []
+            for d, e in zip(dim, end):
+                freqs = 1.0 / (theta ** (torch.arange(0, d, 2, dtype=torch.float64) / d))
+                timestep = torch.arange(e, device=freqs.device, dtype=torch.float64)
+                freqs = torch.outer(timestep, freqs).float()
+                freqs_cis_i = torch.polar(torch.ones_like(freqs), freqs).to(torch.complex64)
+                freqs_cis.append(freqs_cis_i)
+            return freqs_cis
+
+    def __call__(self, ids: torch.Tensor) -> torch.Tensor:
+        device = ids.device
+        if self.freqs_cis is None:
+            self.freqs_cis = self.precompute_freqs_cis(self.axes_dims, self.axes_lens, theta=self.theta)
+            self.freqs_cis = [f.to(device) for f in self.freqs_cis]
+        elif self.freqs_cis[0].device != device:
+            self.freqs_cis = [f.to(device) for f in self.freqs_cis]
+
+        result = []
+        for i in range(len(self.axes_dims)):
+            index = ids[:, i]
+            result.append(self.freqs_cis[i][index])
+        return torch.cat(result, dim=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +245,6 @@ class CuteZImageTransformerBlock(nn.Module):
     With optional AdaLN modulation for refiner blocks.
     """
 
-    ADALN_EMBED_DIM = 3072
-
     def __init__(
         self,
         layer_id: int,
@@ -237,7 +288,7 @@ class CuteZImageTransformerBlock(nn.Module):
         # AdaLN modulation
         if modulation:
             self.adaLN_modulation = nn.Sequential(
-                nn.Linear(min(dim, self.ADALN_EMBED_DIM), 4 * dim, bias=True)
+                nn.Linear(min(dim, ADALN_EMBED_DIM), 4 * dim, bias=True)
             )
 
     def _apply_attention(
@@ -258,7 +309,7 @@ class CuteZImageTransformerBlock(nn.Module):
 
         # Apply RoPE
         if freqs_cis is not None:
-            rope_fn = _get_rope_complex()
+            rope_fn = _get_rope_complex() if q.is_cuda else _apply_rope_complex_fallback
             q = rope_fn(q, freqs_cis)
             k = rope_fn(k, freqs_cis)
 
@@ -295,22 +346,50 @@ class CuteZImageTransformerBlock(nn.Module):
         adaln_noisy: torch.Tensor | None = None,
         adaln_clean: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.modulation and adaln_input is not None:
-            mod = self.adaLN_modulation(adaln_input)
-            scale_msa, gate_msa, scale_mlp, gate_mlp = mod.chunk(4, dim=1)
-            gate_msa = gate_msa.tanh()
-            gate_mlp = gate_mlp.tanh()
-            scale_msa = 1.0 + scale_msa
-            scale_mlp = 1.0 + scale_mlp
+        if self.modulation:
+            if noise_mask is not None:
+                # Per-token modulation (omni mode)
+                mod_noisy = self.adaLN_modulation(adaln_noisy)
+                mod_clean = self.adaLN_modulation(adaln_clean)
+
+                scale_msa_noisy, gate_msa_noisy, scale_mlp_noisy, gate_mlp_noisy = mod_noisy.chunk(4, dim=1)
+                scale_msa_clean, gate_msa_clean, scale_mlp_clean, gate_mlp_clean = mod_clean.chunk(4, dim=1)
+
+                gate_msa_noisy, gate_mlp_noisy = gate_msa_noisy.tanh(), gate_mlp_noisy.tanh()
+                gate_msa_clean, gate_mlp_clean = gate_msa_clean.tanh(), gate_mlp_clean.tanh()
+                scale_msa_noisy, scale_mlp_noisy = 1.0 + scale_msa_noisy, 1.0 + scale_mlp_noisy
+                scale_msa_clean, scale_mlp_clean = 1.0 + scale_msa_clean, 1.0 + scale_mlp_clean
+
+                seq_len = x.shape[1]
+                noise_mask_expanded = noise_mask.unsqueeze(-1)
+                scale_msa = torch.where(noise_mask_expanded == 1,
+                                        scale_msa_noisy.unsqueeze(1).expand(-1, seq_len, -1),
+                                        scale_msa_clean.unsqueeze(1).expand(-1, seq_len, -1))
+                gate_msa = torch.where(noise_mask_expanded == 1,
+                                       gate_msa_noisy.unsqueeze(1).expand(-1, seq_len, -1),
+                                       gate_msa_clean.unsqueeze(1).expand(-1, seq_len, -1))
+                scale_mlp = torch.where(noise_mask_expanded == 1,
+                                        scale_mlp_noisy.unsqueeze(1).expand(-1, seq_len, -1),
+                                        scale_mlp_clean.unsqueeze(1).expand(-1, seq_len, -1))
+                gate_mlp = torch.where(noise_mask_expanded == 1,
+                                       gate_mlp_noisy.unsqueeze(1).expand(-1, seq_len, -1),
+                                       gate_mlp_clean.unsqueeze(1).expand(-1, seq_len, -1))
+            else:
+                # Global modulation (basic text-to-image mode)
+                mod = self.adaLN_modulation(adaln_input)
+                scale_msa, gate_msa, scale_mlp, gate_mlp = mod.unsqueeze(1).chunk(4, dim=2)
+                gate_msa = gate_msa.tanh()
+                gate_mlp = gate_mlp.tanh()
+                scale_msa = 1.0 + scale_msa
+                scale_mlp = 1.0 + scale_mlp
 
             # Attention with modulation
-            normed = self.attention_norm1(x) * scale_msa.unsqueeze(1)
+            normed = self.attention_norm1(x) * scale_msa
             attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-            x = x + gate_msa.unsqueeze(1) * self.attention_norm2(attn_out)
+            x = x + gate_msa * self.attention_norm2(attn_out)
 
             # FFN with modulation
-            normed_ff = self.ffn_norm1(x) * scale_mlp.unsqueeze(1)
-            x = x + gate_mlp.unsqueeze(1) * self.ffn_norm2(self.feed_forward(normed_ff))
+            x = x + gate_mlp * self.ffn_norm2(self.feed_forward(self.ffn_norm1(x) * scale_mlp))
         else:
             # Standard (non-modulated) path
             normed = self.attention_norm1(x)
@@ -323,20 +402,37 @@ class CuteZImageTransformerBlock(nn.Module):
 
 
 class FinalLayer(nn.Module):
-    ADALN_EMBED_DIM = 3072
-
     def __init__(self, hidden_size: int, out_channels: int):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(min(hidden_size, self.ADALN_EMBED_DIM), hidden_size, bias=True),
+            nn.Linear(min(hidden_size, ADALN_EMBED_DIM), hidden_size, bias=True),
         )
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        scale = 1.0 + self.adaLN_modulation(c)
-        x = self.norm_final(x) * scale.unsqueeze(1)
+    def forward(
+        self,
+        x: torch.Tensor,
+        c: torch.Tensor | None = None,
+        noise_mask: torch.Tensor | None = None,
+        c_noisy: torch.Tensor | None = None,
+        c_clean: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if noise_mask is not None:
+            seq_len = x.shape[1]
+            scale_noisy = 1.0 + self.adaLN_modulation(c_noisy)
+            scale_clean = 1.0 + self.adaLN_modulation(c_clean)
+            noise_mask_expanded = noise_mask.unsqueeze(-1)
+            scale = torch.where(
+                noise_mask_expanded == 1,
+                scale_noisy.unsqueeze(1).expand(-1, seq_len, -1),
+                scale_clean.unsqueeze(1).expand(-1, seq_len, -1),
+            )
+        else:
+            scale = (1.0 + self.adaLN_modulation(c)).unsqueeze(1)
+
+        x = self.norm_final(x) * scale
         return self.linear(x)
 
 
@@ -350,7 +446,7 @@ class CuteZImageTransformer(nn.Module):
     Architecture: 30 main transformer layers + 2 refiner layers per stream.
     - dim=3840, 30 heads, SiLU-gated FFN (hidden=10240)
     - Complex-valued RoPE, RMS LayerNorm, QK normalization
-    - AdaLN timestep conditioning on refiner blocks
+    - AdaLN timestep conditioning on refiner and main blocks
 
     Can load weights from a HuggingFace Z-Image checkpoint.
     """
@@ -370,7 +466,7 @@ class CuteZImageTransformer(nn.Module):
         )
 
         # Timestep embedding
-        adaln_dim = min(config.dim, CuteZImageTransformerBlock.ADALN_EMBED_DIM)
+        adaln_dim = min(config.dim, ADALN_EMBED_DIM)
         self.t_embedder = TimestepEmbedder(adaln_dim, mid_size=1024)
 
         # Refiner blocks
@@ -389,11 +485,11 @@ class CuteZImageTransformer(nn.Module):
             for i in range(config.n_refiner_layers)
         ])
 
-        # Main transformer layers
+        # Main transformer layers (modulated, matching diffusers default)
         self.layers = nn.ModuleList([
             CuteZImageTransformerBlock(
                 i, config.dim, config.n_heads, config.n_kv_heads,
-                config.norm_eps, config.qk_norm, modulation=False,
+                config.norm_eps, config.qk_norm, modulation=True,
             )
             for i in range(config.n_layers)
         ])
@@ -405,6 +501,299 @@ class CuteZImageTransformer(nn.Module):
         # Pad tokens
         self.x_pad_token = nn.Parameter(torch.empty(1, config.dim))
         self.cap_pad_token = nn.Parameter(torch.empty(1, config.dim))
+
+        # RoPE embedder
+        self.rope_embedder = RopeEmbedder(
+            theta=config.rope_theta,
+            axes_dims=config.axes_dims,
+            axes_lens=config.axes_lens,
+        )
+
+    # -------------------------------------------------------------------
+    # Forward pass helpers (matching diffusers ZImageTransformer2DModel)
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def create_coordinate_grid(
+        size: tuple, start: tuple | None = None, device: torch.device | None = None,
+    ) -> torch.Tensor:
+        if start is None:
+            start = tuple(0 for _ in size)
+        axes = [torch.arange(x0, x0 + span, dtype=torch.int32, device=device) for x0, span in zip(start, size)]
+        grids = torch.meshgrid(axes, indexing="ij")
+        return torch.stack(grids, dim=-1)
+
+    def _patchify_image(self, image: torch.Tensor, patch_size: int, f_patch_size: int):
+        """Patchify a single image tensor: (C, F, H, W) -> (num_patches, patch_dim)."""
+        pH, pW, pF = patch_size, patch_size, f_patch_size
+        C, F, H, W = image.size()
+        F_tokens, H_tokens, W_tokens = F // pF, H // pH, W // pW
+        image = image.view(C, F_tokens, pF, H_tokens, pH, W_tokens, pW)
+        image = image.permute(1, 3, 5, 2, 4, 6, 0).reshape(F_tokens * H_tokens * W_tokens, pF * pH * pW * C)
+        return image, (F, H, W), (F_tokens, H_tokens, W_tokens)
+
+    def _pad_with_ids(
+        self,
+        feat: torch.Tensor,
+        pos_grid_size: tuple,
+        pos_start: tuple,
+        device: torch.device,
+    ):
+        """Pad feature to SEQ_MULTI_OF, create position IDs and pad mask."""
+        ori_len = len(feat)
+        pad_len = (-ori_len) % SEQ_MULTI_OF
+
+        # Pos IDs from coordinate grid
+        ori_pos_ids = self.create_coordinate_grid(
+            size=pos_grid_size, start=pos_start, device=device,
+        ).flatten(0, -2)  # flatten spatial dims, keep last dim (3)
+
+        if pad_len > 0:
+            pad_pos_ids = (
+                self.create_coordinate_grid(size=(1, 1, 1), start=(0, 0, 0), device=device)
+                .flatten(0, -2)
+                .repeat(pad_len, 1)
+            )
+            pos_ids = torch.cat([ori_pos_ids, pad_pos_ids], dim=0)
+            padded_feat = torch.cat([feat, feat[-1:].repeat(pad_len, 1)], dim=0)
+            pad_mask = torch.cat([
+                torch.zeros(ori_len, dtype=torch.bool, device=device),
+                torch.ones(pad_len, dtype=torch.bool, device=device),
+            ])
+        else:
+            pos_ids = ori_pos_ids
+            padded_feat = feat
+            pad_mask = torch.zeros(ori_len, dtype=torch.bool, device=device)
+
+        total_len = ori_len + pad_len
+        return padded_feat, pos_ids, pad_mask, total_len
+
+    def patchify_and_embed(
+        self,
+        all_image: list[torch.Tensor],
+        all_cap_feats: list[torch.Tensor],
+        patch_size: int,
+        f_patch_size: int,
+    ):
+        """Patchify for basic mode: single image per batch item."""
+        device = all_image[0].device
+        all_img_out, all_img_size, all_img_pos_ids, all_img_pad_mask = [], [], [], []
+        all_cap_out, all_cap_pos_ids, all_cap_pad_mask = [], [], []
+
+        for image, cap_feat in zip(all_image, all_cap_feats):
+            # Caption
+            cap_padded_len = len(cap_feat) + (-len(cap_feat)) % SEQ_MULTI_OF
+            cap_out, cap_pos_ids, cap_pad_mask, cap_len = self._pad_with_ids(
+                cap_feat,
+                (cap_padded_len, 1, 1),
+                (1, 0, 0),
+                device,
+            )
+            all_cap_out.append(cap_out)
+            all_cap_pos_ids.append(cap_pos_ids)
+            all_cap_pad_mask.append(cap_pad_mask)
+
+            # Image
+            img_patches, size, (F_t, H_t, W_t) = self._patchify_image(image, patch_size, f_patch_size)
+            img_out, img_pos_ids, img_pad_mask, _ = self._pad_with_ids(
+                img_patches,
+                (F_t, H_t, W_t),
+                (cap_len + 1, 0, 0),
+                device,
+            )
+            all_img_out.append(img_out)
+            all_img_size.append(size)
+            all_img_pos_ids.append(img_pos_ids)
+            all_img_pad_mask.append(img_pad_mask)
+
+        return (
+            all_img_out,
+            all_cap_out,
+            all_img_size,
+            all_img_pos_ids,
+            all_cap_pos_ids,
+            all_img_pad_mask,
+            all_cap_pad_mask,
+        )
+
+    def _prepare_sequence(
+        self,
+        feats: list[torch.Tensor],
+        pos_ids: list[torch.Tensor],
+        inner_pad_mask: list[torch.Tensor],
+        pad_token: nn.Parameter,
+        device: torch.device,
+    ):
+        """Prepare sequence: apply pad token, RoPE embed, pad to batch, create attention mask."""
+        item_seqlens = [len(f) for f in feats]
+        max_seqlen = max(item_seqlens)
+        bsz = len(feats)
+
+        # Replace padded positions with pad token
+        feats_cat = torch.cat(feats, dim=0)
+        feats_cat[torch.cat(inner_pad_mask)] = pad_token
+        feats_list = list(feats_cat.split(item_seqlens, dim=0))
+
+        # RoPE
+        freqs_list = list(
+            self.rope_embedder(torch.cat(pos_ids, dim=0))
+            .split([len(p) for p in pos_ids], dim=0)
+        )
+
+        # Pad to batch
+        feats_batched = pad_sequence(feats_list, batch_first=True, padding_value=0.0)
+        freqs_batched = pad_sequence(freqs_list, batch_first=True, padding_value=0.0)[:, : feats_batched.shape[1]]
+
+        # Attention mask
+        attn_mask = torch.zeros((bsz, max_seqlen), dtype=torch.bool, device=device)
+        for i, seq_len in enumerate(item_seqlens):
+            attn_mask[i, :seq_len] = 1
+
+        return feats_batched, freqs_batched, attn_mask, item_seqlens
+
+    def _build_unified_sequence(
+        self,
+        x: torch.Tensor,
+        x_freqs: torch.Tensor,
+        x_seqlens: list[int],
+        cap: torch.Tensor,
+        cap_freqs: torch.Tensor,
+        cap_seqlens: list[int],
+        device: torch.device,
+    ):
+        """Build unified sequence [x, cap] for basic mode."""
+        bsz = len(x_seqlens)
+        unified = []
+        unified_freqs = []
+
+        for i in range(bsz):
+            x_len, cap_len = x_seqlens[i], cap_seqlens[i]
+            unified.append(torch.cat([x[i][:x_len], cap[i][:cap_len]]))
+            unified_freqs.append(torch.cat([x_freqs[i][:x_len], cap_freqs[i][:cap_len]]))
+
+        unified_seqlens = [a + b for a, b in zip(x_seqlens, cap_seqlens)]
+        max_seqlen = max(unified_seqlens)
+
+        # Pad to batch
+        unified = pad_sequence(unified, batch_first=True, padding_value=0.0)
+        unified_freqs = pad_sequence(unified_freqs, batch_first=True, padding_value=0.0)
+
+        # Attention mask
+        attn_mask = torch.zeros((bsz, max_seqlen), dtype=torch.bool, device=device)
+        for i, seq_len in enumerate(unified_seqlens):
+            attn_mask[i, :seq_len] = 1
+
+        return unified, unified_freqs, attn_mask
+
+    def unpatchify(
+        self,
+        x: list[torch.Tensor],
+        size: list[tuple],
+        patch_size: int,
+        f_patch_size: int,
+    ) -> list[torch.Tensor]:
+        pH = pW = patch_size
+        pF = f_patch_size
+        for i in range(len(x)):
+            F, H, W = size[i]
+            ori_len = (F // pF) * (H // pH) * (W // pW)
+            x[i] = (
+                x[i][:ori_len]
+                .view(F // pF, H // pH, W // pW, pF, pH, pW, self.config.in_channels)
+                .permute(6, 0, 3, 1, 4, 2, 5)
+                .reshape(self.config.in_channels, F, H, W)
+            )
+        return x
+
+    # -------------------------------------------------------------------
+    # Forward
+    # -------------------------------------------------------------------
+
+    def forward(
+        self,
+        x: list[torch.Tensor],
+        t: torch.Tensor,
+        cap_feats: list[torch.Tensor],
+        return_dict: bool = True,
+        controlnet_block_samples: dict[int, torch.Tensor] | None = None,
+        patch_size: int | None = None,
+        f_patch_size: int | None = None,
+    ):
+        """Basic text-to-image forward pass.
+
+        Parameters
+        ----------
+        x : list of (C, F, H, W) tensors
+            Noisy latent images.
+        t : (B,) tensor
+            Timesteps (0..1 range, will be scaled by t_scale).
+        cap_feats : list of (seq_len, cap_feat_dim) tensors
+            Caption features from text encoder.
+        """
+        if patch_size is None:
+            patch_size = self.config.patch_size
+        if f_patch_size is None:
+            f_patch_size = self.config.f_patch_size
+        device = x[0].device
+
+        # Timestep embedding
+        adaln_input = self.t_embedder(t * self.config.t_scale).type_as(x[0])
+
+        # Patchify
+        (
+            x_patches, cap_patches, x_size,
+            x_pos_ids, cap_pos_ids,
+            x_pad_mask, cap_pad_mask,
+        ) = self.patchify_and_embed(x, cap_feats, patch_size, f_patch_size)
+
+        # X embed & refine
+        x_seqlens = [len(xi) for xi in x_patches]
+        x_embedded = self.x_embedder(torch.cat(x_patches, dim=0))
+        x_tensor, x_freqs, x_mask, x_item_seqlens = self._prepare_sequence(
+            list(x_embedded.split(x_seqlens, dim=0)),
+            x_pos_ids, x_pad_mask, self.x_pad_token, device,
+        )
+
+        for layer in self.noise_refiner:
+            x_tensor = layer(x_tensor, x_mask, x_freqs, adaln_input=adaln_input)
+
+        # Cap embed & refine
+        cap_seqlens = [len(ci) for ci in cap_patches]
+        cap_embedded = self.cap_embedder(torch.cat(cap_patches, dim=0))
+        cap_tensor, cap_freqs, cap_mask, cap_item_seqlens = self._prepare_sequence(
+            list(cap_embedded.split(cap_seqlens, dim=0)),
+            cap_pos_ids, cap_pad_mask, self.cap_pad_token, device,
+        )
+
+        for layer in self.context_refiner:
+            cap_tensor = layer(cap_tensor, cap_mask, cap_freqs)
+
+        # Build unified sequence [x, cap]
+        unified, unified_freqs, unified_mask = self._build_unified_sequence(
+            x_tensor, x_freqs, x_item_seqlens,
+            cap_tensor, cap_freqs, cap_item_seqlens,
+            device,
+        )
+
+        # Main transformer layers
+        for layer_idx, layer in enumerate(self.layers):
+            unified = layer(unified, unified_mask, unified_freqs, adaln_input=adaln_input)
+            if controlnet_block_samples is not None and layer_idx in controlnet_block_samples:
+                unified = unified + controlnet_block_samples[layer_idx]
+
+        # Final layer
+        unified = self.final_layer(unified, c=adaln_input)
+
+        # Unpatchify
+        x_out = self.unpatchify(list(unified.unbind(dim=0)), x_size, patch_size, f_patch_size)
+
+        if return_dict:
+            return {"sample": x_out}
+        return (x_out,)
+
+    # -------------------------------------------------------------------
+    # Weight loading from diffusers
+    # -------------------------------------------------------------------
 
     @classmethod
     def from_diffusers(cls, model: "ZImageTransformer2DModel") -> "CuteZImageTransformer":

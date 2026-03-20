@@ -40,6 +40,7 @@ dev = [
 [project.scripts]
 cutedsl-convert = "cutechronos.convert:main"
 cutedsl-benchmark = "cutechronos.benchmark:main"
+cutedsl-zimage-benchmark = "cutezimage.benchmark:main"
 
 [tool.setuptools.packages.find]
 include = ["cutechronos*", "cutezimage*"]
