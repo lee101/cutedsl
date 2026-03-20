@@ -153,3 +153,51 @@ class TestRoPEComplex:
         assert out.shape == ref.shape
         max_err = (out.float() - ref.float()).abs().max().item()
         assert max_err < 0.02, f"Max error {max_err}"
+
+
+class TestFusedQKNorm:
+    def test_norm_matches_reference(self):
+        """Test fused QK norm matches per-head RMS norm."""
+        from cutezimage.triton_kernels.fused_qkv_norm_rope import fused_qk_norm
+        from cutezimage.model import _rms_norm_fallback
+
+        torch.manual_seed(42)
+        B, S, H, D = 2, 16, 4, 64
+        q = torch.randn(B, S, H, D, device="cuda", dtype=torch.bfloat16)
+        k = torch.randn(B, S, H, D, device="cuda", dtype=torch.bfloat16)
+        qw = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+        kw = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+
+        # Reference: per-head RMS norm
+        q_ref = _rms_norm_fallback(q, qw, 1e-5)
+        k_ref = _rms_norm_fallback(k, kw, 1e-5)
+
+        q_out, k_out = fused_qk_norm(q, k, qw, kw, eps=1e-5)
+
+        assert q_out.shape == q.shape
+        assert k_out.shape == k.shape
+        q_err = (q_out.float() - q_ref.float()).abs().max().item()
+        k_err = (k_out.float() - k_ref.float()).abs().max().item()
+        assert q_err < 0.05, f"Q norm max error {q_err}"
+        assert k_err < 0.05, f"K norm max error {k_err}"
+
+    def test_fp32(self):
+        from cutezimage.triton_kernels.fused_qkv_norm_rope import fused_qk_norm
+        from cutezimage.model import _rms_norm_fallback
+
+        torch.manual_seed(42)
+        B, S, H, D = 1, 8, 2, 32
+        q = torch.randn(B, S, H, D, device="cuda", dtype=torch.float32)
+        k = torch.randn(B, S, H, D, device="cuda", dtype=torch.float32)
+        qw = torch.randn(D, device="cuda", dtype=torch.float32)
+        kw = torch.randn(D, device="cuda", dtype=torch.float32)
+
+        q_ref = _rms_norm_fallback(q, qw, 1e-5)
+        k_ref = _rms_norm_fallback(k, kw, 1e-5)
+
+        q_out, k_out = fused_qk_norm(q, k, qw, kw, eps=1e-5)
+
+        q_err = (q_out - q_ref).abs().max().item()
+        k_err = (k_out - k_ref).abs().max().item()
+        assert q_err < 1e-5, f"Q norm max error {q_err}"
+        assert k_err < 1e-5, f"K norm max error {k_err}"

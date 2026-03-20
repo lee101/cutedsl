@@ -896,3 +896,34 @@ class CuteZImageTransformer(nn.Module):
 
     def parameter_count(self) -> int:
         return sum(p.numel() for p in self.parameters())
+
+    @classmethod
+    def from_diffusers_compiled(
+        cls,
+        model: "ZImageTransformer2DModel",
+        compile_mode: str = "reduce-overhead",
+    ) -> "CuteZImageTransformer":
+        """Create a compiled CuteZImageTransformer from diffusers weights.
+
+        The forward method is compiled with torch.compile for maximum inference
+        throughput. Uses fullgraph=False to handle dynamic control flow.
+
+        Args:
+            model: diffusers ZImageTransformer2DModel instance.
+            compile_mode: torch.compile mode.
+
+        Returns:
+            Compiled CuteZImageTransformer.
+        """
+        cute = cls.from_diffusers(model)
+        if hasattr(torch, "compile"):
+            try:
+                cute.forward = torch.compile(  # type: ignore[assignment]
+                    cute.forward,
+                    mode=compile_mode,
+                    fullgraph=False,
+                )
+                print(f"[cutezimage] torch.compile enabled (mode={compile_mode}).")
+            except Exception as exc:
+                print(f"[cutezimage] torch.compile failed ({exc}); using eager mode.")
+        return cute
