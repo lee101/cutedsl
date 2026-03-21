@@ -76,29 +76,44 @@ def main():
     cute_q = cute.quantiles
     print(f"  done ({len(cute_q)} quantiles)")
 
-    print(f"\n{'Test':<18} {'Len':>5} | {'Up ms':>8} {'Cute ms':>8} {'Speedup':>8} | {'MAE-up':>10} {'MAE-cute':>10} {'MaxAbsDiff':>11}")
-    print("-" * 105)
+    # --- load cute compiled ---
+    print("Loading CuteChronos2Pipeline (compiled, reduce-overhead)...")
+    cute_compiled = CuteChronos2Pipeline.from_pretrained(
+        MODEL_ID, device=DEVICE, dtype=DTYPE, compile_mode="reduce-overhead",
+    )
+    cute_c_q = cute_compiled.quantiles
+    print(f"  done ({len(cute_c_q)} quantiles)")
+
+    header = (f"{'Test':<18} {'Len':>5} | {'Up ms':>8} {'Cute ms':>8} {'Compiled':>8} | "
+              f"{'SpeedE':>7} {'SpeedC':>7} | {'MAE-up':>10} {'MAE-cute':>10} {'MaxDiff':>8} {'MaxDiffC':>9}")
+    print(f"\n{header}")
+    print("-" * 130)
 
     for name, (ctx, actual) in TESTS.items():
         up_preds, up_times = time_predict(upstream, ctx, PRED_LEN, True, N_WARMUP, N_RUNS)
         cute_preds, cute_times = time_predict(cute, ctx, PRED_LEN, False, N_WARMUP, N_RUNS)
+        comp_preds, comp_times = time_predict(cute_compiled, ctx, PRED_LEN, False, N_WARMUP + 2, N_RUNS)
 
         up_med = extract_median(up_preds, up_q)
         cute_med = extract_median(cute_preds, cute_q)
+        comp_med = extract_median(comp_preds, cute_c_q)
 
         max_abs_diff = (up_med - cute_med).abs().max().item()
+        max_abs_diff_c = (up_med - comp_med).abs().max().item()
 
         mae_up = (up_med - actual).abs().mean().item() if actual is not None else float("nan")
         mae_cute = (cute_med - actual).abs().mean().item() if actual is not None else float("nan")
 
         up_ms = np.mean(up_times) * 1000
         cute_ms = np.mean(cute_times) * 1000
-        speedup = up_ms / max(cute_ms, 0.001)
+        comp_ms = np.mean(comp_times) * 1000
+        speedup_e = up_ms / max(cute_ms, 0.001)
+        speedup_c = up_ms / max(comp_ms, 0.001)
 
-        print(f"{name:<18} {len(ctx):>5} | {up_ms:>8.2f} {cute_ms:>8.2f} {speedup:>7.2f}x | {mae_up:>10.4f} {mae_cute:>10.4f} {max_abs_diff:>11.6f}")
+        print(f"{name:<18} {len(ctx):>5} | {up_ms:>8.2f} {cute_ms:>8.2f} {comp_ms:>8.2f} | "
+              f"{speedup_e:>6.1f}x {speedup_c:>6.1f}x | {mae_up:>10.4f} {mae_cute:>10.4f} {max_abs_diff:>8.4f} {max_abs_diff_c:>9.4f}")
 
-    # cleanup
-    del upstream, cute
+    del upstream, cute, cute_compiled
     gc.collect()
     torch.cuda.empty_cache()
     print("\nDone.")

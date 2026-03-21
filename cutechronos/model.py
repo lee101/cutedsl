@@ -28,6 +28,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file as safetensors_load_file
 
+# ---------------------------------------------------------------------------
+# Optional Triton kernel imports (fall back to PyTorch if unavailable)
+# ---------------------------------------------------------------------------
+
+try:
+    from cutechronos.triton_kernels.rms_layernorm import rms_layernorm as _triton_rms_layernorm
+    _HAS_TRITON_RMS = True
+except (ImportError, ModuleNotFoundError):
+    _HAS_TRITON_RMS = False
+
+try:
+    from cutechronos.triton_kernels.rope import apply_rope as _triton_apply_rope
+    _HAS_TRITON_ROPE = True
+except (ImportError, ModuleNotFoundError):
+    _HAS_TRITON_ROPE = False
+
 
 # ---------------------------------------------------------------------------
 # Config dataclass (mirrors Chronos2ForecastingConfig)
@@ -74,6 +90,8 @@ class CuteChronos2Config:
 
 def rms_layernorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """T5-style RMS LayerNorm: no mean subtraction, FP32 variance."""
+    if _HAS_TRITON_RMS and x.is_cuda:
+        return _triton_rms_layernorm(x, weight, eps)
     variance = x.float().pow(2).mean(-1, keepdim=True)
     x = x * torch.rsqrt(variance + eps)
     if weight.dtype in (torch.float16, torch.bfloat16):
@@ -207,8 +225,11 @@ class TimeSelfAttentionFallback(nn.Module):
         k = F.linear(normed, self.k.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
         v = F.linear(normed, self.v.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
 
-        cos, sin = compute_cos_sin_fallback(self.inv_freq, position_ids, q.dtype)
-        q, k = apply_rope_fallback(q, k, cos, sin)
+        if _HAS_TRITON_ROPE and q.is_cuda:
+            q, k = _triton_apply_rope(q, k, self.inv_freq, position_ids)
+        else:
+            cos, sin = compute_cos_sin_fallback(self.inv_freq, position_ids, q.dtype)
+            q, k = apply_rope_fallback(q, k, cos, sin)
 
         attn_output = unscaled_attention_fallback(q, k, v, attention_mask)
         # reshape avoids the allocation from .contiguous()
