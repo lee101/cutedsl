@@ -169,6 +169,16 @@ def _get_rope_complex():
     return _apply_rope_complex_fallback
 
 
+def _get_fused_adaln_rms_norm():
+    if _use_triton():
+        try:
+            from cutezimage.triton_kernels.fused_adaln_norm import fused_adaln_rms_norm
+            return fused_adaln_rms_norm
+        except ImportError:
+            pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Sub-modules
 # ---------------------------------------------------------------------------
@@ -374,6 +384,14 @@ class CuteZImageTransformerBlock(nn.Module):
                 gate_mlp = torch.where(noise_mask_expanded == 1,
                                        gate_mlp_noisy.unsqueeze(1).expand(-1, seq_len, -1),
                                        gate_mlp_clean.unsqueeze(1).expand(-1, seq_len, -1))
+
+                # Attention with modulation (per-token scale is (B, S, D))
+                normed = self.attention_norm1(x) * scale_msa
+                attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
+                x = x + gate_msa * self.attention_norm2(attn_out)
+
+                # FFN with modulation
+                x = x + gate_mlp * self.ffn_norm2(self.feed_forward(self.ffn_norm1(x) * scale_mlp))
             else:
                 # Global modulation (basic text-to-image mode)
                 mod = self.adaLN_modulation(adaln_input)
@@ -383,13 +401,21 @@ class CuteZImageTransformerBlock(nn.Module):
                 scale_msa = 1.0 + scale_msa
                 scale_mlp = 1.0 + scale_mlp
 
-            # Attention with modulation
-            normed = self.attention_norm1(x) * scale_msa
-            attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-            x = x + gate_msa * self.attention_norm2(attn_out)
+                # Attention with modulation
+                _adaln_fn = _get_fused_adaln_rms_norm() if x.is_cuda else None
+                if _adaln_fn is not None:
+                    normed = _adaln_fn(x, scale_msa.squeeze(1), self.attention_norm1.weight, eps=self.attention_norm1.eps)
+                else:
+                    normed = self.attention_norm1(x) * scale_msa
+                attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
+                x = x + gate_msa * self.attention_norm2(attn_out)
 
-            # FFN with modulation
-            x = x + gate_mlp * self.ffn_norm2(self.feed_forward(self.ffn_norm1(x) * scale_mlp))
+                # FFN with modulation
+                if _adaln_fn is not None:
+                    ffn_input = _adaln_fn(x, scale_mlp.squeeze(1), self.ffn_norm1.weight, eps=self.ffn_norm1.eps)
+                else:
+                    ffn_input = self.ffn_norm1(x) * scale_mlp
+                x = x + gate_mlp * self.ffn_norm2(self.feed_forward(ffn_input))
         else:
             # Standard (non-modulated) path
             normed = self.attention_norm1(x)
