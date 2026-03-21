@@ -4,6 +4,8 @@ Accelerated model inference via custom Triton and CUDA kernels. CuteDSL converts
 
 This is not just CuteDSL related the goal is to just build the fastest and best froneir models possible and catalog them, much like transformers/diffusers etc.... doesnt need to be cutedsl only!
 
+A lot of this is created by autoresearch style bots that try to maintain evals while speeding up models and fusing kernels with cutedsl seems to be working well right now.
+
 ![cutedsl.png](./cutedsl.png)
 
 ## CuteChronos2
