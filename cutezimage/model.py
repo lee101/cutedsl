@@ -179,6 +179,17 @@ def _get_fused_adaln_rms_norm():
     return None
 
 
+def _get_fused_qk_norm():
+    if _use_triton():
+        try:
+            from cutezimage.triton_kernels.fused_qkv_norm_rope import fused_qk_norm
+            return fused_qk_norm
+        except ImportError:
+            pass
+    return None
+
+
+
 # ---------------------------------------------------------------------------
 # Sub-modules
 # ---------------------------------------------------------------------------
@@ -242,6 +253,10 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         t_freq = self.timestep_embedding(t, self.freq_dim)
+        # Cast to weight dtype (timestep_embedding always returns float32)
+        weight_dtype = self.mlp[0].weight.dtype
+        if weight_dtype.is_floating_point:
+            t_freq = t_freq.to(weight_dtype)
         return self.mlp(t_freq)
 
 
@@ -314,8 +329,12 @@ class CuteZImageTransformerBlock(nn.Module):
         v = self.v_proj(x).unflatten(-1, (self.n_kv_heads, self.head_dim))
 
         if self.qk_norm:
-            q = self.q_norm(q)
-            k = self.k_norm(k)
+            _fqk = _get_fused_qk_norm() if q.is_cuda and self.n_kv_heads == self.n_heads else None
+            if _fqk is not None:
+                q, k = _fqk(q, k, self.q_norm.weight, self.k_norm.weight, eps=1e-5)
+            else:
+                q = self.q_norm(q)
+                k = self.k_norm(k)
 
         # Apply RoPE
         if freqs_cis is not None:
@@ -875,9 +894,7 @@ class CuteZImageTransformer(nn.Module):
             self.x_pad_token.copy_(sd["x_pad_token"])
             self.cap_pad_token.copy_(sd["cap_pad_token"])
 
-            # Final layer
-            self.final_layer.norm_final.weight.copy_(sd[f"all_final_layer.{ps}.norm_final.weight"])
-            self.final_layer.norm_final.bias.copy_(sd[f"all_final_layer.{ps}.norm_final.bias"])
+            # Final layer (norm_final has elementwise_affine=False, no weight/bias)
             self.final_layer.linear.weight.copy_(sd[f"all_final_layer.{ps}.linear.weight"])
             self.final_layer.linear.bias.copy_(sd[f"all_final_layer.{ps}.linear.bias"])
             self.final_layer.adaLN_modulation[1].weight.copy_(sd[f"all_final_layer.{ps}.adaLN_modulation.1.weight"])
