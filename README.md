@@ -2,6 +2,8 @@
 
 Accelerated model inference via custom Triton and CUDA kernels. CuteDSL converts popular ML models into optimized versions with fused operations, custom attention kernels, and reduced memory allocations while maintaining output equivalence.
 
+This is not just CuteDSL related the goal is to just build the fastest and best froneir models possible and catalog them, much like transformers/diffusers etc.... doesnt need to be cutedsl only!
+
 ![cutedsl.png](./cutedsl.png)
 
 ## CuteChronos2
