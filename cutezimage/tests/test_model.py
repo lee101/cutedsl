@@ -1,5 +1,7 @@
 """Tests for CuteZImage model components."""
 
+import os
+
 import pytest
 import torch
 
@@ -265,3 +267,84 @@ class TestCUDA:
         out = ffn(x)
         assert out.shape == x.shape
         assert out.device.type == "cuda"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CUTEZIMAGE_MODEL_ID"),
+    reason="Set CUTEZIMAGE_MODEL_ID env var to run overlap tests (requires model download)",
+)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+class TestDiffusersOverlap:
+    """Validate CuteZImage output matches diffusers ZImageTransformer2DModel."""
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        """Load both diffusers and CuteZImage transformers."""
+        model_id = os.environ["CUTEZIMAGE_MODEL_ID"]
+        from diffusers import ZImagePipeline
+
+        pipe = ZImagePipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+        orig = pipe.transformer.to("cuda", torch.bfloat16).eval()
+        cute = CuteZImageTransformer.from_diffusers(orig).to("cuda", torch.bfloat16).eval()
+        return orig, cute, pipe
+
+    def test_transformer_output_matches(self, models):
+        """Transformer outputs should match within bfloat16 tolerance."""
+        orig, cute, _ = models
+        # Create synthetic inputs
+        torch.manual_seed(42)
+        cfg = cute.config
+        x = [torch.randn(cfg.in_channels, 1, 128, 128, device="cuda", dtype=torch.bfloat16)]
+        t = torch.tensor([0.5], device="cuda", dtype=torch.bfloat16)
+        cap = [torch.randn(77, cfg.cap_feat_dim, device="cuda", dtype=torch.bfloat16)]
+
+        with torch.no_grad():
+            out_orig = orig(x, t, cap, return_dict=False)[0]
+            out_cute = cute(x, t, cap, return_dict=False)[0]
+
+        for o, c in zip(out_orig, out_cute):
+            diff = (o.float() - c.float()).abs()
+            max_err = diff.max().item()
+            mean_err = diff.mean().item()
+            assert max_err < 0.01, f"Max error {max_err} >= 0.01"
+            assert mean_err < 0.001, f"Mean error {mean_err} >= 0.001"
+
+    def test_pipeline_image_similarity(self, models):
+        """Full pipeline images should have high SSIM and PSNR."""
+        _, cute, pipe = models
+        from cutezimage.image_metrics import compare_images, pil_to_tensor
+
+        seed = 42
+        gen = torch.Generator(device="cuda").manual_seed(seed)
+        prompt = "a red apple on a wooden table"
+
+        # Original pipeline
+        gen.manual_seed(seed)
+        orig_result = pipe(
+            prompt=prompt,
+            width=512,
+            height=512,
+            num_inference_steps=9,
+            guidance_scale=0.0,
+            generator=gen,
+        )
+        orig_img = orig_result.images[0]
+
+        # Replace with CuteZImage
+        pipe.transformer = cute
+        gen.manual_seed(seed)
+        cute_result = pipe(
+            prompt=prompt,
+            width=512,
+            height=512,
+            num_inference_steps=9,
+            guidance_scale=0.0,
+            generator=gen,
+        )
+        cute_img = cute_result.images[0]
+
+        # Compare
+        metrics = compare_images(pil_to_tensor(orig_img), pil_to_tensor(cute_img))
+        assert metrics["ssim"] > 0.99, f"SSIM {metrics['ssim']} <= 0.99"
+        assert metrics["psnr_db"] > 40.0, f"PSNR {metrics['psnr_db']} <= 40.0 dB"
+        assert metrics["max_pixel_error"] < 5.0, f"Max pixel error {metrics['max_pixel_error']} >= 5"
