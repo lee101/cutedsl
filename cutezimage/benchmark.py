@@ -17,6 +17,7 @@ Measures latency, peak GPU memory, and output matching (max abs error).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import gc
 import json
 import time
@@ -219,6 +220,14 @@ def main():
     parser.add_argument("--n-runs", type=int, default=10)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output", default="benchmark_results.json")
+    parser.add_argument("--compile", action="store_true",
+                        help="Use torch.compile on CuteZImage transformer")
+    parser.add_argument("--compile-mode", default="reduce-overhead",
+                        choices=["default", "reduce-overhead", "max-autotune"],
+                        help="torch.compile mode (default: reduce-overhead)")
+    parser.add_argument("--sdpa-backend", default=None,
+                        choices=["flash", "math", "efficient", "cudnn"],
+                        help="Force specific SDPA backend (default: auto)")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -251,12 +260,41 @@ def main():
     print("\n--- Creating CuteZImageTransformer from diffusers weights ---")
     from cutezimage.model import CuteZImageTransformer
 
-    cute_transformer = CuteZImageTransformer.from_diffusers(orig_transformer)
+    if args.compile:
+        cute_transformer = CuteZImageTransformer.from_diffusers_compiled(
+            orig_transformer, compile_mode=args.compile_mode
+        )
+    else:
+        cute_transformer = CuteZImageTransformer.from_diffusers(orig_transformer)
     cute_transformer = cute_transformer.to(args.device, torch.bfloat16)
     print(f"  Created. Parameters: {cute_transformer.parameter_count():,}")
 
     # Move orig to same device for comparison
     orig_transformer = orig_transformer.to(args.device, torch.bfloat16).eval()
+
+    # ------------------------------------------------------------------
+    # 2b. Set up SDPA backend context and compile warmup adjustments
+    # ------------------------------------------------------------------
+    sdpa_context = contextlib.nullcontext()
+    if args.sdpa_backend:
+        try:
+            backend_map = {
+                "flash": torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+                "math": torch.nn.attention.SDPBackend.MATH,
+                "efficient": torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
+                "cudnn": torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+            }
+            sdpa_context = torch.nn.attention.sdpa_kernel(backend_map[args.sdpa_backend])
+            print(f"  SDPA backend: {args.sdpa_backend}")
+        except (AttributeError, RuntimeError) as e:
+            print(f"  Warning: SDPA backend '{args.sdpa_backend}' not available ({e}), using auto")
+
+    # Auto-increase warmup when torch.compile is enabled
+    n_warmup = args.n_warmup
+    if args.compile:
+        n_warmup = max(args.n_warmup, 3)
+        if n_warmup != args.n_warmup:
+            print(f"  Auto-increased warmup from {args.n_warmup} to {n_warmup} for torch.compile")
 
     # ------------------------------------------------------------------
     # 3. Transformer-level comparison (synthetic inputs)
@@ -280,46 +318,47 @@ def main():
         seed=args.seed,
     )
 
-    # Run both models with identical inputs
-    with torch.no_grad():
-        out_orig = orig_transformer(x_synth, t_synth, cap_synth, return_dict=False)
-        out_cute = cute_transformer(x_synth, t_synth, cap_synth, return_dict=False)
+    with sdpa_context:
+        # Run both models with identical inputs
+        with torch.no_grad():
+            out_orig = orig_transformer(x_synth, t_synth, cap_synth, return_dict=False)
+            out_cute = cute_transformer(x_synth, t_synth, cap_synth, return_dict=False)
 
-    # Compare outputs
-    comparison = compare_outputs(out_orig[0], out_cute[0])
-    print(f"  Max absolute error: {comparison['max_abs_error']:.6e}")
-    print(f"  Mean absolute error: {comparison['mean_abs_error']:.6e}")
-    print(f"  Outputs match (< 0.01): {comparison['matches']}")
-    results["output_comparison"] = comparison
+        # Compare outputs
+        comparison = compare_outputs(out_orig[0], out_cute[0])
+        print(f"  Max absolute error: {comparison['max_abs_error']:.6e}")
+        print(f"  Mean absolute error: {comparison['mean_abs_error']:.6e}")
+        print(f"  Outputs match (< 0.01): {comparison['matches']}")
+        results["output_comparison"] = comparison
 
-    # ------------------------------------------------------------------
-    # 4. Latency benchmark
-    # ------------------------------------------------------------------
-    print("\n--- Latency benchmark (transformer only) ---")
+        # ------------------------------------------------------------------
+        # 4. Latency benchmark
+        # ------------------------------------------------------------------
+        print("\n--- Latency benchmark (transformer only) ---")
 
-    result_orig = benchmark_transformer(
-        orig_transformer, x_synth, t_synth, cap_synth,
-        n_warmup=args.n_warmup, n_runs=args.n_runs, label="original_zimage",
-    )
-    results["original_zimage"] = result_orig
-    print(f"  Original: {result_orig['avg_latency_ms']:.1f} ms "
-          f"(std={result_orig['std_latency_ms']:.1f}, min={result_orig['min_latency_ms']:.1f})")
+        result_orig = benchmark_transformer(
+            orig_transformer, x_synth, t_synth, cap_synth,
+            n_warmup=n_warmup, n_runs=args.n_runs, label="original_zimage",
+        )
+        results["original_zimage"] = result_orig
+        print(f"  Original: {result_orig['avg_latency_ms']:.1f} ms "
+              f"(std={result_orig['std_latency_ms']:.1f}, min={result_orig['min_latency_ms']:.1f})")
 
-    result_cute = benchmark_transformer(
-        cute_transformer, x_synth, t_synth, cap_synth,
-        n_warmup=args.n_warmup, n_runs=args.n_runs, label="cute_zimage",
-    )
-    results["cute_zimage"] = result_cute
-    print(f"  CuteZImage: {result_cute['avg_latency_ms']:.1f} ms "
-          f"(std={result_cute['std_latency_ms']:.1f}, min={result_cute['min_latency_ms']:.1f})")
+        result_cute = benchmark_transformer(
+            cute_transformer, x_synth, t_synth, cap_synth,
+            n_warmup=n_warmup, n_runs=args.n_runs, label="cute_zimage",
+        )
+        results["cute_zimage"] = result_cute
+        print(f"  CuteZImage: {result_cute['avg_latency_ms']:.1f} ms "
+              f"(std={result_cute['std_latency_ms']:.1f}, min={result_cute['min_latency_ms']:.1f})")
 
-    speedup = result_orig["avg_latency_ms"] / max(result_cute["avg_latency_ms"], 1e-9)
-    print(f"  Speedup: {speedup:.2f}x")
-    results["transformer_comparison"] = {
-        "speedup": speedup,
-        "max_abs_error": comparison["max_abs_error"],
-        "outputs_match": comparison["matches"],
-    }
+        speedup = result_orig["avg_latency_ms"] / max(result_cute["avg_latency_ms"], 1e-9)
+        print(f"  Speedup: {speedup:.2f}x")
+        results["transformer_comparison"] = {
+            "speedup": speedup,
+            "max_abs_error": comparison["max_abs_error"],
+            "outputs_match": comparison["matches"],
+        }
 
     # Free transformer-only resources before pipeline test
     del orig_transformer
@@ -385,11 +424,26 @@ def main():
         print(f"  Images saved to {output_dir}/")
 
     # ------------------------------------------------------------------
+    # Config info
+    # ------------------------------------------------------------------
+    results["config"] = {
+        "compile": args.compile,
+        "compile_mode": args.compile_mode if args.compile else None,
+        "sdpa_backend": args.sdpa_backend or "auto",
+    }
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
     print("\n" + "=" * 72)
     print("BENCHMARK RESULTS")
     print("=" * 72)
+    compile_info = f"compile={args.compile}"
+    if args.compile:
+        compile_info += f" (mode={args.compile_mode})"
+    sdpa_info = f"sdpa_backend={args.sdpa_backend or 'auto'}"
+    print(f"Config: {compile_info}, {sdpa_info}")
+    print()
     header = f"{'Model':<25} {'Latency(ms)':<15} {'GPU(MB)':<15}"
     print(header)
     print("-" * 72)
