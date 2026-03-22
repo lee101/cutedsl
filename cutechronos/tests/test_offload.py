@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import patch
 
-import pytest
 import torch
 
 from cutechronos.model import CuteChronos2Config, CuteChronos2Model
