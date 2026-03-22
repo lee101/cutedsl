@@ -71,14 +71,17 @@ def _load_model_cute(
     compile_mode: str | None = None,
 ):
     """Load via CuteChronos2Model (no upstream dependency for inference)."""
-    from huggingface_hub import snapshot_download
+    from pathlib import Path
     from cutechronos.model import CuteChronos2Model
 
-    # Resolve HuggingFace model ID to local path
-    local_path = snapshot_download(
-        model_path,
-        allow_patterns=["*.json", "*.safetensors", "*.bin"],
-    )
+    if Path(model_path).is_dir():
+        local_path = str(model_path)
+    else:
+        from huggingface_hub import snapshot_download
+        local_path = snapshot_download(
+            model_path,
+            allow_patterns=["*.json", "*.safetensors", "*.bin"],
+        )
 
     if compile_mode:
         model = CuteChronos2Model.from_pretrained_compiled(local_path, compile_mode=compile_mode)

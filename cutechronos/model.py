@@ -555,6 +555,13 @@ class CuteChronos2Model(nn.Module):
             seq_length, dtype=torch.long, device=self._param_device()
         ).unsqueeze(0)
 
+    def _get_position_ids_batched(self, seq_length: int, batch_size: int) -> torch.Tensor:
+        """Position IDs expanded to batch size for Triton RoPE kernel."""
+        pos = self._get_position_ids(seq_length)
+        if batch_size > 1:
+            pos = pos.expand(batch_size, -1)
+        return pos
+
     def offload_to_cpu(self):
         """Move model to CPU and free GPU memory."""
         if hasattr(self, "_orig_mod"):
@@ -683,8 +690,7 @@ class CuteChronos2Model(nn.Module):
         extended_attention_mask = self._expand_and_invert_time_attention_mask(attention_mask, dtype)
         group_time_mask = self._construct_and_invert_group_time_mask(group_ids, attention_mask, dtype)
 
-        # Position IDs (cached, regenerated only when seq_length changes)
-        position_ids = self._get_position_ids(seq_length)
+        position_ids = self._get_position_ids_batched(seq_length, batch_size)
 
         # Encoder forward
         hidden_states = input_embeds  # Note: original has dropout here, skip for inference
