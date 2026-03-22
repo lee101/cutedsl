@@ -271,10 +271,6 @@ class CuteChronos2Pipeline:
         # Auto-onload if model was offloaded
         if self._is_cute and getattr(self.model, "is_offloaded", False):
             self.model.onload_to_gpu(self._device)
-        elif not self._is_cute:
-            model_device = next(self.model.parameters()).device
-            if str(model_device) != self._device:
-                self.model.to(self._device)
 
         if prediction_length is None:
             prediction_length = self.model_prediction_length
@@ -314,8 +310,12 @@ class CuteChronos2Pipeline:
                 return output.quantile_preds
 
         if batch_size is not None and batch_size < total_batch:
-            chunks = [ctx[i : i + batch_size] for i in range(0, total_batch, batch_size)]
-            preds = torch.cat([_forward_chunk(c) for c in chunks], dim=0)
+            if cross_learning:
+                logger.warning("batch_size chunking disabled for cross_learning=True (would break group attention)")
+                preds = _forward_chunk(ctx)
+            else:
+                chunks = [ctx[i : i + batch_size] for i in range(0, total_batch, batch_size)]
+                preds = torch.cat([_forward_chunk(c) for c in chunks], dim=0)
         else:
             preds = _forward_chunk(ctx)
 
@@ -422,6 +422,12 @@ class CuteChronos2Pipeline:
         except ImportError as exc:
             raise ImportError("pandas is required for predict_df") from exc
 
+        if future_df is not None:
+            raise NotImplementedError(
+                "future_df (future covariates) is not supported by CuteChronos2Pipeline. "
+                "Pass future_df=None or use the upstream Chronos2Pipeline."
+            )
+
         if prediction_length is None:
             prediction_length = self.model_prediction_length
         if quantile_levels is None:
@@ -442,13 +448,13 @@ class CuteChronos2Pipeline:
 
         # preds: list of (1, Q, H) -> stack to (N, Q, H)
         all_preds = torch.cat(preds, dim=0)  # (N, Q, H)
+        actual_horizon = all_preds.shape[-1]  # may be < prediction_length if clamped
 
         # Select/interpolate requested quantile levels vectorized
-        selected = _select_quantiles(all_preds, self.quantiles, quantile_levels)  # (N, H, len(ql))
+        selected = _select_quantiles(all_preds, self.quantiles, quantile_levels)  # (N, actual_horizon, len(ql))
 
-        # Build DataFrame efficiently
         n_series = len(item_ids)
-        n_steps = prediction_length
+        n_steps = actual_horizon
         n_ql = len(quantile_levels)
 
         ids_repeated = [iid for iid in item_ids for _ in range(n_steps)]
