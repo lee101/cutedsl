@@ -14,7 +14,7 @@ except ImportError:
 
 try:
     from .attention import unscaled_attention
-except ImportError:
+except (ImportError, TypeError):
     pass
 
 try:
