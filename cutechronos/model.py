@@ -17,6 +17,7 @@ Memory optimizations applied:
 from __future__ import annotations
 
 import json
+import logging
 import time as _time_module
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file as safetensors_load_file
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Optional Triton kernel imports (fall back to PyTorch if unavailable)
@@ -394,6 +397,7 @@ class CuteChronos2Model(nn.Module):
     def __init__(self, config: CuteChronos2Config):
         super().__init__()
         self.config = config
+        self._offloaded = False
 
         # Embedding for special tokens (PAD=0, REG=1)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
@@ -551,6 +555,24 @@ class CuteChronos2Model(nn.Module):
             seq_length, dtype=torch.long, device=self._param_device()
         ).unsqueeze(0)
 
+    def offload_to_cpu(self):
+        """Move model to CPU and free GPU memory."""
+        if hasattr(self, "_orig_mod"):
+            logger.warning("offload_to_cpu called on a torch.compile'd model; compiled graphs cache device info")
+        self.to("cpu")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self._offloaded = True
+
+    def onload_to_gpu(self, device: str = "cuda"):
+        """Move model back to GPU."""
+        self.to(device)
+        self._offloaded = False
+
+    @property
+    def is_offloaded(self) -> bool:
+        return getattr(self, "_offloaded", False)
+
     @contextmanager
     def profile_allocations(self):
         """Context manager that reports allocation count and peak memory.
@@ -604,6 +626,7 @@ class CuteChronos2Model(nn.Module):
         context: torch.Tensor,
         context_mask: torch.Tensor | None = None,
         num_output_patches: int = 1,
+        group_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass producing quantile predictions.
 
@@ -611,6 +634,8 @@ class CuteChronos2Model(nn.Module):
             context: (B, L) raw time series values (may contain NaN)
             context_mask: (B, L) binary mask (1=valid, 0=missing), optional
             num_output_patches: number of output patches to predict
+            group_ids: (B,) group IDs for cross-series attention, optional.
+                       If None, each series gets a unique group (no cross-learning).
 
         Returns:
             quantile_preds: (B, Q, H) where Q=num_quantiles, H=num_output_patches*patch_size
@@ -649,8 +674,9 @@ class CuteChronos2Model(nn.Module):
         input_embeds = torch.cat([input_embeds, future_embeds], dim=-2)
         attention_mask = torch.cat([attention_mask.to(dtype), future_attention_mask], dim=-1)
 
-        # Group IDs: each series independent
-        group_ids = torch.arange(batch_size, dtype=torch.long, device=input_embeds.device)
+        # Group IDs: use provided or default to each series independent
+        if group_ids is None:
+            group_ids = torch.arange(batch_size, dtype=torch.long, device=input_embeds.device)
 
         # Build masks
         seq_length = input_embeds.shape[1]
@@ -760,20 +786,72 @@ class CuteChronos2Model(nn.Module):
                     state_dict[f"{prefix}.layer.2.mlp.wo.weight"]
                 )
 
+    def load_lora_adapter(self, adapter_path: str | Path) -> None:
+        """Merge a peft LoRA adapter into model weights in-place.
+
+        Reads adapter_config.json for r, lora_alpha, target_modules, fan_in_fan_out.
+        Loads adapter weights from safetensors (or .bin fallback).
+        Computes: merged = original + (alpha/r) * (B @ A) and writes back in-place.
+        """
+        adapter_path = Path(adapter_path)
+
+        with open(adapter_path / "adapter_config.json") as f:
+            cfg = json.load(f)
+
+        r = cfg["r"]
+        lora_alpha = cfg["lora_alpha"]
+        fan_in_fan_out = cfg.get("fan_in_fan_out", False)
+        target_modules = cfg.get("target_modules", ["q", "k", "v", "o"])
+        scaling = lora_alpha / r
+
+        st_path = adapter_path / "adapter_model.safetensors"
+        bin_path = adapter_path / "adapter_model.bin"
+        if st_path.exists():
+            lora_sd = safetensors_load_file(str(st_path))
+        elif bin_path.exists():
+            lora_sd = torch.load(str(bin_path), map_location="cpu", weights_only=True)
+        else:
+            raise FileNotFoundError(f"No adapter weights in {adapter_path}")
+
+        layer_map = {0: "time_attn", 1: "group_attn"}
+
+        merged_count = 0
+        with torch.no_grad():
+            for i, block in enumerate(self.blocks):
+                for layer_idx, attn_name in layer_map.items():
+                    attn_mod = getattr(block, attn_name)
+                    for proj in target_modules:
+                        key_a = f"base_model.model.encoder.block.{i}.layer.{layer_idx}.self_attention.{proj}.lora_A.weight"
+                        key_b = f"base_model.model.encoder.block.{i}.layer.{layer_idx}.self_attention.{proj}.lora_B.weight"
+                        if key_a not in lora_sd:
+                            continue
+                        lora_a = lora_sd[key_a]
+                        lora_b = lora_sd[key_b]
+                        param = getattr(attn_mod, proj).weight
+                        delta = lora_b @ lora_a
+                        if fan_in_fan_out:
+                            delta = delta.T
+                        param.add_(delta.to(param.dtype) * scaling)
+                        merged_count += 1
+
+        logger.info("merged %d LoRA adapters (r=%d, alpha=%d)", merged_count, r, lora_alpha)
+
     @classmethod
-    def from_pretrained(cls, model_path: str | Path) -> "CuteChronos2Model":
+    def from_pretrained(cls, model_path: str | Path, adapter_path: str | Path | None = None) -> "CuteChronos2Model":
         """Load a CuteChronos2Model from a HuggingFace Chronos2 checkpoint directory.
+
+        If adapter_path is provided or the model directory contains adapter_config.json,
+        the LoRA adapter is merged into the base weights after loading.
 
         Args:
             model_path: path to directory containing config.json and model weights
-                        (safetensors or pytorch bin format)
+            adapter_path: optional path to a LoRA adapter directory
 
         Returns:
-            Initialized model with loaded weights, in eval mode.
+            Initialized model with loaded (and optionally LoRA-merged) weights, in eval mode.
         """
         model_path = Path(model_path)
 
-        # Load config
         config_path = model_path / "config.json"
         with open(config_path) as f:
             raw_config = json.load(f)
@@ -803,7 +881,6 @@ class CuteChronos2Model(nn.Module):
 
         model = cls(config)
 
-        # Load weights
         safetensors_path = model_path / "model.safetensors"
         bin_path = model_path / "pytorch_model.bin"
         if safetensors_path.exists():
@@ -817,6 +894,12 @@ class CuteChronos2Model(nn.Module):
             )
 
         model.load_chronos2_weights(state_dict)
+
+        if adapter_path is None and (model_path / "adapter_config.json").exists():
+            adapter_path = model_path
+        if adapter_path is not None:
+            model.load_lora_adapter(adapter_path)
+
         model.eval()
         return model
 
@@ -866,21 +949,20 @@ class CuteChronos2Model(nn.Module):
         cls,
         model_path: str | Path,
         compile_mode: str = "reduce-overhead",
+        adapter_path: str | Path | None = None,
     ) -> "CuteChronos2Model":
         """Load a CuteChronos2Model and apply torch.compile for faster inference.
-
-        The forward method is compiled while preprocessing (NaN handling,
-        instance normalization) runs in eager mode to avoid graph breaks.
 
         Args:
             model_path: path to directory containing config.json and model weights
             compile_mode: torch.compile mode (e.g., "reduce-overhead", "max-autotune",
                           "default"). Defaults to "reduce-overhead" for best latency.
+            adapter_path: optional path to a LoRA adapter directory
 
         Returns:
             Initialized model with compiled forward, in eval mode.
         """
-        model = cls.from_pretrained(model_path)
+        model = cls.from_pretrained(model_path, adapter_path=adapter_path)
         model = _apply_torch_compile(model, compile_mode=compile_mode)
         return model
 
