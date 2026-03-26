@@ -22,12 +22,16 @@ import time as _time_module
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from safetensors.torch import load_file as safetensors_load_file
+
+try:
+    from safetensors.torch import load_file as safetensors_load_file
+except ImportError:
+    safetensors_load_file = None
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +218,9 @@ class TimeSelfAttentionFallback(nn.Module):
             config.rope_theta ** (torch.arange(0, config.d_kv, 2, dtype=torch.int64).float() / config.d_kv)
         )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.key_quantizer: nn.Module | None = None
+        self.value_quantizer: nn.Module | None = None
+        self.last_quantization_stats: dict[str, float] | None = None
 
     def forward(
         self,
@@ -233,6 +240,33 @@ class TimeSelfAttentionFallback(nn.Module):
         else:
             cos, sin = compute_cos_sin_fallback(self.inv_freq, position_ids, q.dtype)
             q, k = apply_rope_fallback(q, k, cos, sin)
+
+        key_stats: dict[str, float] | None = None
+        value_stats: dict[str, float] | None = None
+        if self.key_quantizer is not None:
+            k = self.key_quantizer(k).to(dtype=hidden_states.dtype)
+            key_stats = getattr(self.key_quantizer, "last_stats", None)
+        if self.value_quantizer is not None:
+            v = self.value_quantizer(v).to(dtype=hidden_states.dtype)
+            value_stats = getattr(self.value_quantizer, "last_stats", None)
+
+        if key_stats is not None or value_stats is not None:
+            raw_bytes = float((key_stats or {}).get("raw_bytes", 0.0) + (value_stats or {}).get("raw_bytes", 0.0))
+            quantized_bytes = float(
+                (key_stats or {}).get("quantized_bytes", 0.0)
+                + (value_stats or {}).get("quantized_bytes", 0.0)
+            )
+            self.last_quantization_stats = {
+                "raw_bytes": raw_bytes,
+                "quantized_bytes": quantized_bytes,
+                "compression_ratio": raw_bytes / max(quantized_bytes, 1.0),
+                "key_mse": float((key_stats or {}).get("mse", 0.0)),
+                "value_mse": float((value_stats or {}).get("mse", 0.0)),
+                "key_max_abs_error": float((key_stats or {}).get("max_abs_error", 0.0)),
+                "value_max_abs_error": float((value_stats or {}).get("max_abs_error", 0.0)),
+            }
+        else:
+            self.last_quantization_stats = None
 
         attn_output = unscaled_attention_fallback(q, k, v, attention_mask)
         # reshape avoids the allocation from .contiguous()
@@ -437,6 +471,7 @@ class CuteChronos2Model(nn.Module):
         # Cached position_ids buffer (regenerated when seq_length changes)
         self.register_buffer("_cached_position_ids", torch.empty(0, dtype=torch.long), persistent=False)
         self._cached_seq_length: int = -1
+        self._tubroquant_config: dict[str, Any] | None = None
 
     def _prepare_patched_context(
         self,
@@ -580,6 +615,81 @@ class CuteChronos2Model(nn.Module):
     def is_offloaded(self) -> bool:
         return getattr(self, "_offloaded", False)
 
+    def enable_turboquant_kv(
+        self,
+        bits: int = 4,
+        *,
+        key_mode: str = "prod",
+        value_mode: str = "mse",
+        rotation: str = "hadamard",
+        seed: int = 0,
+        norm_dtype: str = "float16",
+    ) -> "CuteChronos2Model":
+        """Enable TurboQuant-style quantization on time-attention K/V tensors.
+
+        Chronos2 in this repository is encoder-only, so this hook quantizes the
+        transient K/V tensors inside time attention as a proxy for long-context
+        KV-cache compression experiments.
+        """
+        from tubroquant.quantizer import TurboQuantizer
+
+        for idx, block in enumerate(self.blocks):
+            block.time_attn.key_quantizer = TurboQuantizer(
+                dim=self.config.d_kv,
+                bits=bits,
+                mode=key_mode,
+                rotation=rotation,
+                seed=seed + (2 * idx),
+                norm_dtype=norm_dtype,
+            )
+            block.time_attn.value_quantizer = TurboQuantizer(
+                dim=self.config.d_kv,
+                bits=bits,
+                mode=value_mode,
+                rotation=rotation,
+                seed=seed + (2 * idx) + 1,
+                norm_dtype=norm_dtype,
+            )
+        self._tubroquant_config = {
+            "bits": bits,
+            "key_mode": key_mode,
+            "value_mode": value_mode,
+            "rotation": rotation,
+            "seed": seed,
+            "norm_dtype": norm_dtype,
+        }
+        return self
+
+    def disable_turboquant_kv(self) -> "CuteChronos2Model":
+        """Disable TurboQuant quantization on time-attention K/V tensors."""
+        for block in self.blocks:
+            block.time_attn.key_quantizer = None
+            block.time_attn.value_quantizer = None
+            block.time_attn.last_quantization_stats = None
+        self._tubroquant_config = None
+        return self
+
+    def get_tubroquant_summary(self) -> dict[str, Any]:
+        """Return the latest per-layer TurboQuant statistics."""
+        layers: list[dict[str, float]] = []
+        for layer_idx, block in enumerate(self.blocks):
+            stats = block.time_attn.last_quantization_stats
+            if stats is None:
+                continue
+            layer_stats = {"layer": float(layer_idx)}
+            layer_stats.update(stats)
+            layers.append(layer_stats)
+
+        total_raw_bytes = sum(layer["raw_bytes"] for layer in layers)
+        total_quantized_bytes = sum(layer["quantized_bytes"] for layer in layers)
+        return {
+            "enabled": self._tubroquant_config is not None,
+            "config": self._tubroquant_config,
+            "layers": layers,
+            "total_raw_bytes": total_raw_bytes,
+            "total_quantized_bytes": total_quantized_bytes,
+            "compression_ratio": total_raw_bytes / max(total_quantized_bytes, 1.0),
+        }
     @contextmanager
     def profile_allocations(self):
         """Context manager that reports allocation count and peak memory.
@@ -890,6 +1000,10 @@ class CuteChronos2Model(nn.Module):
         safetensors_path = model_path / "model.safetensors"
         bin_path = model_path / "pytorch_model.bin"
         if safetensors_path.exists():
+            if safetensors_load_file is None:
+                raise ImportError(
+                    "safetensors is required to load model.safetensors checkpoints"
+                )
             state_dict = safetensors_load_file(str(safetensors_path))
         elif bin_path.exists():
             state_dict = torch.load(str(bin_path), map_location="cpu", weights_only=True)

@@ -41,12 +41,13 @@ dev = [
 cutedsl-convert = "cutechronos.convert:main"
 cutedsl-benchmark = "cutechronos.benchmark:main"
 cutedsl-zimage-benchmark = "cutezimage.benchmark:main"
+cutedsl-tubroquant-benchmark = "tubroquant.chronos_benchmark:main"
 
 [tool.setuptools.packages.find]
-include = ["cutechronos*", "cutezimage*"]
+include = ["cutechronos*", "cutezimage*", "tubroquant*"]
 
 [tool.pytest.ini_options]
-testpaths = ["cutechronos/tests", "cutezimage/tests"]
+testpaths = ["cutechronos/tests", "cutezimage/tests", "tubroquant/tests"]
 markers = [
     "model_required: tests that require the original chronos-forecasting package",
 ]
