@@ -47,6 +47,14 @@ try:
 except (ImportError, ModuleNotFoundError):
     _HAS_TRITON_ROPE = False
 
+try:
+    from cutechronos.triton_kernels.fused_layernorm_linear import (
+        fused_rms_norm_qkv as _triton_fused_rms_norm_qkv,
+    )
+    _HAS_TRITON_FUSED_QKV = True
+except (ImportError, ModuleNotFoundError):
+    _HAS_TRITON_FUSED_QKV = False
+
 
 # ---------------------------------------------------------------------------
 # Config dataclass (mirrors Chronos2ForecastingConfig)
@@ -222,11 +230,24 @@ class TimeSelfAttentionFallback(nn.Module):
         position_ids: torch.Tensor,
     ) -> torch.Tensor:
         B, S, _ = hidden_states.shape
-        normed = rms_layernorm(hidden_states, self.layer_norm_weight, self.eps)
+        if _HAS_TRITON_FUSED_QKV and hidden_states.is_cuda:
+            q, k, v = _triton_fused_rms_norm_qkv(
+                hidden_states,
+                self.layer_norm_weight,
+                self.q.weight,
+                self.k.weight,
+                self.v.weight,
+                self.eps,
+            )
+        else:
+            normed = rms_layernorm(hidden_states, self.layer_norm_weight, self.eps)
+            q = F.linear(normed, self.q.weight)
+            k = F.linear(normed, self.k.weight)
+            v = F.linear(normed, self.v.weight)
 
-        q = F.linear(normed, self.q.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
-        k = F.linear(normed, self.k.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
-        v = F.linear(normed, self.v.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
+        q = q.view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
+        k = k.view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
+        v = v.view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
 
         if _HAS_TRITON_ROPE and q.is_cuda:
             q, k = _triton_apply_rope(q, k, self.inv_freq, position_ids)

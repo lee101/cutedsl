@@ -21,3 +21,8 @@ benchmark_images/
 benchmark_results/
 *.png
 !cutedsl.png
+.codex
+examples/crypto_hourly_frontier
+examples/mixed_crypto_lora/
+examples/lora_frontier/
+examples/chronos_wrappers/*.csv

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Fused QK-Norm kernel for Z-Image attention.
 
 Z-Image attention applies per-head RMS norm to Q and K after projection:

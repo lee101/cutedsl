@@ -43,6 +43,14 @@ try:
 except (ImportError, ModuleNotFoundError):
     _has_triton_attn = False
 
+try:
+    from cutechronos.triton_kernels.fused_layernorm_linear import (
+        fused_rms_norm_qkv as _fused_rms_norm_qkv_triton,
+    )
+    _has_triton_fused_qkv = True
+except (ImportError, ModuleNotFoundError):
+    _has_triton_fused_qkv = False
+
 
 class FusedTimeSelfAttention(nn.Module):
     """Drop-in replacement for Chronos2 ``TimeSelfAttention``.
@@ -122,16 +130,32 @@ class FusedTimeSelfAttention(nn.Module):
         B, S, _ = hidden_states.shape
         on_cuda = hidden_states.is_cuda
 
-        # 1. RMS LayerNorm
-        if on_cuda and _has_triton_rms:
-            normed = _rms_layernorm_triton(hidden_states, self.layer_norm_weight, self.layer_norm_eps)
+        # 1-3. RMS LayerNorm + QKV projections.
+        # Prefer the fused Triton path to avoid materializing the normalized
+        # intermediate and to reuse the normalized row across Q/K/V.
+        if on_cuda and _has_triton_fused_qkv:
+            query_states, key_states, value_states = _fused_rms_norm_qkv_triton(
+                hidden_states,
+                self.layer_norm_weight,
+                self.q.weight,
+                self.k.weight,
+                self.v.weight,
+                self.layer_norm_eps,
+            )
         else:
-            normed = _rms_layernorm_fallback(hidden_states, self.layer_norm_weight, self.layer_norm_eps)
+            if on_cuda and _has_triton_rms:
+                normed = _rms_layernorm_triton(hidden_states, self.layer_norm_weight, self.layer_norm_eps)
+            else:
+                normed = _rms_layernorm_fallback(hidden_states, self.layer_norm_weight, self.layer_norm_eps)
 
-        # 2-3. QKV projections -> reshape to (B, H, S, d_kv)
-        query_states = F.linear(normed, self.q.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
-        key_states = F.linear(normed, self.k.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
-        value_states = F.linear(normed, self.v.weight).view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
+            query_states = F.linear(normed, self.q.weight)
+            key_states = F.linear(normed, self.k.weight)
+            value_states = F.linear(normed, self.v.weight)
+
+        # Reshape to (B, H, S, d_kv)
+        query_states = query_states.view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
+        key_states = key_states.view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
+        value_states = value_states.view(B, S, self.num_heads, self.d_kv).transpose(1, 2)
 
         # 4. Apply RoPE
         if on_cuda and _has_triton_rope:

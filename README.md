@@ -132,7 +132,26 @@ predictions = pipe.predict(context, prediction_length=30)
 # Batch of variable-length series
 contexts = [torch.randn(300), torch.randn(400), torch.randn(512)]
 predictions = pipe.predict(contexts, prediction_length=30)
+
+# Batch of multivariate series
+multi_context = torch.randn(8, 3, 512)
+quantiles, mean = pipe.predict_quantiles(
+    multi_context,
+    prediction_length=24,
+    quantile_levels=[0.1, 0.5, 0.9],
+)
+# quantiles[0].shape: (3, 24, 3)
+# mean[0].shape: (3, 24)
 ```
+
+CuteChronos2Pipeline now supports:
+
+- `1-D` tensors for a single univariate series
+- `2-D` tensors for a batch of univariate series
+- `3-D` tensors with shape `(batch, n_variates, history_length)` for multivariate inference
+- lists mixing univariate `1-D` items and multivariate `2-D` items
+
+Dictionary-style covariate inputs are still not implemented in Cute. For `past_covariates` and `future_covariates`, use the upstream Chronos-2 pipeline for now.
 
 ### Run Benchmarks
 
@@ -147,6 +166,133 @@ python -m cutechronos.benchmark \
     --context-length 512 \
     --prediction-length 30
 ```
+
+## Parakeet STT Experiments
+
+CuteDSL also includes a Parakeet ASR experiment harness for sweeping latency,
+real-time factor, and transcript drift across inference settings.
+
+Install the optional ASR stack:
+
+```bash
+uv pip install -e ".[parakeet]"
+```
+
+Run a sweep over batch size, timestamp extraction, input mode, and autocast:
+
+```bash
+python -m cuteparakeet.benchmark \
+    --device cuda \
+    --audio-dir /home/lee/code/voicetype/test_audio \
+    --reference-json /home/lee/code/voicetype/test_audio/ground_truth.json \
+    --batch-sizes 1 4 8 12 16 \
+    --timestamps off on \
+    --input-modes path array \
+    --amp-dtypes none bf16 \
+    --allow-tf32 \
+    --output-json /tmp/parakeet_results.json
+```
+
+Current direction from local experiments on the bundled `voicetype` samples:
+
+- `batch_size=12` with `input_mode=array`, `bf16`, `timestamps=off` was the best throughput point so far.
+- Preloading audio arrays was slightly faster and slightly more accurate than path-based input on this corpus.
+- Enabling timestamps reduced throughput materially.
+- `torch.compile` on the Parakeet encoder was a large regression and is not recommended.
+- The first GPU call is materially slower than steady-state because NeMo does decoder graph setup on first use, so benchmark first-call and steady-state separately.
+
+There is also an ONNX export utility:
+
+```bash
+python -m cuteparakeet.export_onnx \
+    --device cuda \
+    --batch-size 1 \
+    --audio-seconds 4 \
+    --output-dir /tmp/parakeet_onnx \
+    --simplify
+```
+
+### Cross-Language Wrapper Examples
+
+There is also a wrapper benchmark under [`examples/chronos_wrappers/`](/home/lee/code/cutedsl/examples/chronos_wrappers) that drives the same `CuteChronos2` inference path from:
+
+- C
+- Go
+- Python
+
+and compares those wrapper timings against upstream Chronos-2 Python.
+
+```bash
+make -C examples/chronos_wrappers
+
+/home/lee/code/stock/.venv/bin/python examples/chronos_wrappers/benchmark.py \
+    --device cuda \
+    --runs 5 \
+    --warmup 1 \
+    --stock-data-dir /home/lee/code/stock/trainingdatadailybinance \
+    --symbols BTCUSD ETHUSD SOLUSD
+```
+
+The benchmark includes the toy sequence `[2, 4, 6, 8, 12] -> [14, 16, 18]` plus a few real stock/crypto CSV series, and reports both absolute `MAE` and percentage `MAPE%`.
+
+There is also a tuner at [`examples/chronos_wrappers/tune_cutechronos.py`](/home/lee/code/cutedsl/examples/chronos_wrappers/tune_cutechronos.py) that sweeps pre-augmentation strategy, context length, quantile, inference ensemble strategy, dtype, and compile mode over rolling holdout windows, ranking configs by `MAPE%` by default.
+
+For LoRA fine-tuning, there is a frontier runner at [`examples/lora_frontier.py`](/home/lee/code/cutedsl/examples/lora_frontier.py). It drives the stock repo's Chronos-2 LoRA trainer, measures wall-clock training time, records validation/test MAE%, and emits the Pareto frontier for `train_seconds` versus `val_mae_percent`.
+
+```bash
+/home/lee/code/stock/.venv/bin/python examples/lora_frontier.py \
+    --symbols BTCUSD \
+    --preaugs percent_change log_returns baseline \
+    --context-lengths 128 256 \
+    --learning-rates 5e-5 1e-4 \
+    --num-steps 50 100 250
+```
+
+To verify an exported LoRA checkpoint can be loaded back through CuteChronos inference, use [`examples/eval_exported_lora.py`](/home/lee/code/cutedsl/examples/eval_exported_lora.py):
+
+```bash
+/home/lee/code/stock/.venv/bin/python examples/eval_exported_lora.py \
+    --model-id /path/to/finetuned-ckpt \
+    --symbol BTCUSD \
+    --preaug percent_change \
+    --context-length 128 \
+    --prediction-length 24
+```
+
+For bulk hourly-crypto tuning, use [`examples/crypto_hourly_frontier.py`](/home/lee/code/cutedsl/examples/crypto_hourly_frontier.py). It stages a broad per-symbol inference sweep first, optionally tries dilation ensembles only on laggards, then launches bounded LoRA frontier runs only where the base model is still weak.
+
+```bash
+/home/lee/code/stock/.venv/bin/python examples/crypto_hourly_frontier.py \
+    --data-root /home/lee/code/stock/trainingdatahourly/crypto \
+    --run-dilation-pass \
+    --run-lora-pass
+```
+
+To test whether a mixed-symbol crypto LoRA base transfers to harder targets, use [`examples/mixed_crypto_lora_transfer.py`](/home/lee/code/cutedsl/examples/mixed_crypto_lora_transfer.py). It trains a LoRA on a pool of hourly crypto symbols, exports a normal `finetuned-ckpt`, and reports target-symbol validation/test MAPE before and after the mixed training.
+
+```bash
+/home/lee/code/stock/.venv/bin/python examples/mixed_crypto_lora_transfer.py \
+    --max-train-symbols 8 \
+    --eval-symbols SOLUSDT ETHUSDT
+```
+
+To test raw multivariate pair forecasting on hourly crypto data, use [`examples/multivariate_pair_eval.py`](/home/lee/code/cutedsl/examples/multivariate_pair_eval.py). It now supports small frontier-style searches over partner pools, context lengths, strides, and `cross_learning`, so it is useful both for quick pair checks and for finding lower-MAE multivariate setups before porting them into native services.
+
+```bash
+/home/lee/code/stock/.venv/bin/python examples/multivariate_pair_eval.py \
+    --backends cute \
+    --target-symbols TAOUSD SOLUSDT BTCUSDT ETHUSDT \
+    --partner-symbols ETHUSDT SOLUSDT BTCUSDT BTCUSD ETHUSD SOLUSD \
+    --partner-pool-sizes 1 2 \
+    --context-lengths 128 256 \
+    --strides 12 24 \
+    --cross-learning-options off on \
+    --windows 64 \
+    --warmup-windows 4 \
+    --max-multivariate-runs 64
+```
+
+This emits both JSON and CSV summaries plus a Pareto-style frontier ranked by `avg_latency_ms` versus `mean_mape_pct`.
 
 ### Run Tests
 

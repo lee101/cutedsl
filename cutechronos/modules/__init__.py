@@ -1,19 +1,19 @@
 try:
     from .time_attention import FusedTimeSelfAttention
-except ImportError:
+except (ImportError, TypeError):
     pass
 
 try:
     from .group_attention import FusedGroupSelfAttention
-except ImportError:
+except (ImportError, TypeError):
     pass
 
 try:
     from .feedforward import FusedFeedForward
-except ImportError:
+except (ImportError, TypeError):
     pass
 
 try:
     from .output import FusedOutputHead
-except ImportError:
+except (ImportError, TypeError):
     pass

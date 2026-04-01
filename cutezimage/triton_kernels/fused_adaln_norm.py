@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Fused AdaLN + RMS Norm kernel for Z-Image transformer blocks.
 
 Z-Image uses adaptive layer normalization (AdaLN) for timestep conditioning:

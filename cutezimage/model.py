@@ -13,6 +13,7 @@ the from_diffusers() factory method.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -159,8 +160,21 @@ def _get_silu_gate():
     return _silu_gate_fallback
 
 
-def _get_rope_complex():
+def _get_fused_silu_gate_ffn():
     if _use_triton():
+        try:
+            from cutezimage.triton_kernels.fused_silu_gate_ffn import fused_silu_gate_ffn
+            return fused_silu_gate_ffn
+        except ImportError:
+            pass
+    return None
+
+
+def _get_rope_complex():
+    # The Triton complex-RoPE kernel is currently unstable on at least some
+    # CUDA 12.8/12.9 setups. Keep the exact PyTorch path as the default and
+    # allow explicit opt-in for kernel testing via env override.
+    if _use_triton() and os.environ.get("CUTEZIMAGE_USE_TRITON_ROPE") == "1":
         try:
             from cutezimage.triton_kernels.rope_complex import apply_rope_complex
             return apply_rope_complex
@@ -218,6 +232,15 @@ class SiLUGatedFFN(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        fused_ffn_fn = _get_fused_silu_gate_ffn() if x.is_cuda else None
+        if fused_ffn_fn is not None:
+            return fused_ffn_fn(
+                x,
+                self.w1.weight,
+                self.w2.weight,
+                self.w3.weight,
+            )
+
         x1 = self.w1(x)
         x3 = self.w3(x)
         if x.is_cuda:

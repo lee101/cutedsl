@@ -25,7 +25,8 @@ def cute_pipeline():
 @pytest.fixture(scope="module")
 def original_pipeline():
     """Load the upstream Chronos2Pipeline once for the entire test module."""
-    from chronos.chronos2 import Chronos2Pipeline
+    chronos2 = pytest.importorskip("chronos.chronos2")
+    Chronos2Pipeline = chronos2.Chronos2Pipeline
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = Chronos2Pipeline.from_pretrained(MODEL_ID, dtype=torch.bfloat16)
@@ -45,6 +46,20 @@ def batch_context():
     """A batch of 3 random context tensors of different lengths."""
     torch.manual_seed(42)
     return [torch.randn(300), torch.randn(400), torch.randn(512)]
+
+
+@pytest.fixture()
+def multivariate_context():
+    """A batch of 2 trivariate context tensors."""
+    torch.manual_seed(42)
+    return torch.randn(2, 3, 512)
+
+
+@pytest.fixture()
+def mixed_multivariate_context():
+    """A mixed list of univariate and multivariate tasks."""
+    torch.manual_seed(42)
+    return [torch.randn(512), torch.randn(2, 400), torch.randn(3, 300)]
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +117,22 @@ class TestPredict:
         assert len(preds) == 3
         for p in preds:
             assert p.shape == (1, len(cute_pipeline.quantiles), prediction_length)
+
+    def test_predict_3d_tensor_multivariate(self, cute_pipeline, multivariate_context):
+        prediction_length = 24
+        preds = cute_pipeline.predict(multivariate_context, prediction_length=prediction_length)
+        assert isinstance(preds, list)
+        assert len(preds) == 2
+        for p in preds:
+            assert p.shape == (3, len(cute_pipeline.quantiles), prediction_length)
+
+    def test_predict_list_mixed_variates(self, cute_pipeline, mixed_multivariate_context):
+        prediction_length = 24
+        preds = cute_pipeline.predict(mixed_multivariate_context, prediction_length=prediction_length)
+        assert len(preds) == 3
+        assert preds[0].shape == (1, len(cute_pipeline.quantiles), prediction_length)
+        assert preds[1].shape == (2, len(cute_pipeline.quantiles), prediction_length)
+        assert preds[2].shape == (3, len(cute_pipeline.quantiles), prediction_length)
 
     def test_predict_default_length(self, cute_pipeline, random_context):
         preds = cute_pipeline.predict(random_context)
@@ -242,3 +273,19 @@ class TestEquivalence:
         # Both should return lists of same length
         assert len(cute_q) == len(orig_q)
         assert len(cute_m) == len(orig_m)
+
+    def test_multivariate_output_equivalence(self, cute_pipeline, original_pipeline, multivariate_context):
+        prediction_length = 24
+        cute_preds = cute_pipeline.predict(multivariate_context, prediction_length=prediction_length)
+        orig_preds = original_pipeline.predict(multivariate_context, prediction_length=prediction_length)
+
+        assert len(cute_preds) == len(orig_preds) == 2
+        for cute_tensor, orig_tensor in zip(cute_preds, orig_preds):
+            assert cute_tensor.shape == orig_tensor.shape
+            cute_nan = torch.isnan(cute_tensor)
+            orig_nan = torch.isnan(orig_tensor)
+            assert (cute_nan == orig_nan).all()
+            valid_mask = ~cute_nan
+            if valid_mask.any():
+                mae = (cute_tensor[valid_mask] - orig_tensor[valid_mask]).abs().mean().item()
+                assert mae < 1e-4, f"MAE between cute and original is {mae:.6f}, expected < 1e-4"

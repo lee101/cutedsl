@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Fused SiLU-gated FFN kernel for Z-Image transformer.
 
 Z-Image FeedForward uses a gated architecture:

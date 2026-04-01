@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.2.0",
+    "torch>=2.8.0,<2.9.0",
     "triton>=3.0.0",
     "safetensors>=0.4.0",
     "einops>=0.7.0",
@@ -22,14 +22,30 @@ chronos = [
     "chronos-forecasting @ git+https://github.com/amazon-science/chronos-forecasting.git",
     "transformers>=4.38.0",
 ]
+parakeet = [
+    "nemo_toolkit[asr]>=2.2.0",
+    "soundfile>=0.12.1",
+]
 zimage = [
+    "torchvision>=0.23.0,<0.24.0",
     "diffusers>=0.36.0",
     "transformers>=4.38.0",
     "accelerate>=1.0.0",
 ]
+teleport = [
+    "torchvision>=0.23.0,<0.24.0",
+    "diffusers>=0.36.0",
+    "transformers>=4.38.0",
+    "accelerate>=1.0.0",
+    "spacy>=3.7.0",
+    "lpips>=0.1.4",
+    "clean-fid>=0.1.35",
+    "scikit-learn>=1.3.0",
+]
 benchmark = [
     "pandas>=2.0.0",
     "clean-fid>=0.1.35",
+    "python-dotenv>=1.0.0",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -40,13 +56,33 @@ dev = [
 [project.scripts]
 cutedsl-convert = "cutechronos.convert:main"
 cutedsl-benchmark = "cutechronos.benchmark:main"
+cutedsl-parakeet-benchmark = "cuteparakeet.benchmark:main"
+cutedsl-parakeet-export-onnx = "cuteparakeet.export_onnx:main"
 cutedsl-zimage-benchmark = "cutezimage.benchmark:main"
+cutedsl-zimageaccelerated-benchmark = "zimageaccelerated.benchmark:main"
+cutedsl-zimageaccelerated-transformer-benchmark = "zimageaccelerated.benchmark_transformer:main"
+cutedsl-zimageaccelerated-gpu-pool = "zimageaccelerated.gpu_pool:main"
+cutedsl-zimageaccelerated-generate-dataset = "zimageaccelerated.generate_dataset:main"
+cutedsl-teleport-generate-cache = "latentteleport.dataset:main"
+cutedsl-teleport-train = "latentteleport.train:main"
+cutedsl-teleport-benchmark = "latentteleport.benchmark:main"
+cutedsl-teleport-train-sequence = "latentteleport.train_sequence:main"
+cutedsl-teleport-demo = "latentteleport.demo:main"
 
 [tool.setuptools.packages.find]
-include = ["cutechronos*", "cutezimage*"]
+include = ["cutechronos*", "cuteparakeet*", "cutezimage*", "zimageaccelerated*", "latentteleport*"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
 
 [tool.pytest.ini_options]
-testpaths = ["cutechronos/tests", "cutezimage/tests"]
+testpaths = ["cutechronos/tests", "cutezimage/tests", "latentteleport/tests", "tests"]
 markers = [
     "model_required: tests that require the original chronos-forecasting package",
 ]

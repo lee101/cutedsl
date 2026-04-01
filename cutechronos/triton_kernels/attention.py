@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Triton kernel for unscaled multi-head attention (scale=1.0).
 
 Chronos2 uses attention WITHOUT the standard 1/sqrt(d_k) scaling factor.

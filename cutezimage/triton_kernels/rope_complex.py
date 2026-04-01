@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Fused complex-valued RoPE kernel for Z-Image transformer.
 
 Z-Image uses complex-multiplication RoPE:

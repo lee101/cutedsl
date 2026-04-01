@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Triton RMS LayerNorm kernel for Z-Image transformer.
 
 Z-Image uses standard RMS norm (with optional affine weight):

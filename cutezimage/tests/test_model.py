@@ -47,6 +47,29 @@ class TestSiLUGatedFFN:
         actual = sum(p.numel() for p in ffn.parameters())
         assert actual == expected
 
+    def test_uses_fused_ffn_helper_on_cuda_inputs(self, monkeypatch):
+        ffn = SiLUGatedFFN(8, 16)
+        x = torch.randn(2, 4, 8)
+        calls: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+
+        def fake_fused_ffn(inp, w1, w2, w3):
+            calls.append((inp, w1, w2, w3))
+            return torch.full_like(inp, 7.0)
+
+        monkeypatch.setattr("cutezimage.model._get_fused_silu_gate_ffn", lambda: fake_fused_ffn)
+
+        class _CudaLikeTensor(torch.Tensor):
+            @property
+            def is_cuda(self):
+                return True
+
+        x_cuda_like = x.as_subclass(_CudaLikeTensor)
+        out = ffn(x_cuda_like)
+
+        assert len(calls) == 1
+        assert out.shape == x.shape
+        assert torch.equal(out, torch.full_like(x, 7.0))
+
 
 class TestTimestepEmbedder:
     def test_output_shape(self):

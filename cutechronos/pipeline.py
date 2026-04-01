@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import warnings
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 import torch
 
@@ -212,32 +212,108 @@ class CuteChronos2Pipeline:
     # -- helpers -------------------------------------------------------------
 
     @staticmethod
-    def _left_pad_and_stack(tensors: List[torch.Tensor]) -> torch.Tensor:
-        """Left-pad variable-length 1D tensors and stack into a 2D batch."""
-        max_len = max(t.shape[-1] for t in tensors)
+    def _left_pad_and_stack_rows(rows: List[torch.Tensor]) -> torch.Tensor:
+        """Left-pad variable-length 1D rows and stack into a 2D batch."""
+        max_len = max(row.shape[-1] for row in rows)
         padded = []
-        for t in tensors:
-            pad_len = max_len - t.shape[-1]
+        for row in rows:
+            pad_len = max_len - row.shape[-1]
             if pad_len > 0:
-                pad = torch.full((pad_len,), float("nan"), dtype=t.dtype, device=t.device)
-                t = torch.cat([pad, t])
-            padded.append(t)
+                pad = torch.full((pad_len,), float("nan"), dtype=row.dtype, device=row.device)
+                row = torch.cat([pad, row])
+            padded.append(row)
         return torch.stack(padded)
 
-    def _prepare_context(self, context: Union[torch.Tensor, List[torch.Tensor]]) -> torch.Tensor:
-        """Normalise *context* to a 2-D float32 tensor on the right device."""
-        if isinstance(context, list):
-            context = self._left_pad_and_stack(context)
-        if context.ndim == 1:
-            context = context.unsqueeze(0)
-        if context.ndim == 3 and context.shape[1] == 1:
-            # (B, 1, T) -> (B, T)  univariate convenience
-            context = context.squeeze(1)
-        assert context.ndim == 2, f"context must be 2-D, got shape {context.shape}"
-        # Truncate to model context length
+    @staticmethod
+    def _as_tensor(value: Any) -> torch.Tensor:
+        if isinstance(value, torch.Tensor):
+            return value
+        return torch.as_tensor(value)
+
+    def _finalize_context_batch(self, context: torch.Tensor) -> torch.Tensor:
         if context.shape[-1] > self.model_context_length:
             context = context[..., -self.model_context_length:]
         return context.to(device=self._device, dtype=torch.float32)
+
+    def _prepare_context(
+        self,
+        context: Union[torch.Tensor, List[torch.Tensor]],
+    ) -> tuple[torch.Tensor, torch.Tensor, list[tuple[int, int]]]:
+        """Normalize context into a flat batch plus grouping metadata.
+
+        Returns
+        -------
+        context
+            2-D float32 tensor of shape ``(sum_variates, history_length)``.
+        group_ids
+            Group IDs used for cross-variate attention. Variates from the same
+            multivariate task share the same group ID.
+        target_idx_ranges
+            Ranges used to reshape flat batch predictions back into one output
+            tensor per original task.
+        """
+        if isinstance(context, list):
+            rows: list[torch.Tensor] = []
+            group_ids: list[int] = []
+            target_idx_ranges: list[tuple[int, int]] = []
+
+            for group_idx, item in enumerate(context):
+                if isinstance(item, dict):
+                    raise NotImplementedError(
+                        "Covariate dictionaries are not supported by CuteChronos2Pipeline yet. "
+                        "Pass raw targets only or use the upstream Chronos2Pipeline."
+                    )
+                tensor = self._as_tensor(item)
+                if tensor.ndim == 1:
+                    tensor = tensor.unsqueeze(0)
+                elif tensor.ndim != 2:
+                    raise ValueError(f"Each list item must be 1-D or 2-D, got shape {tuple(tensor.shape)}")
+
+                start = len(rows)
+                rows.extend(tensor[row_idx] for row_idx in range(tensor.shape[0]))
+                end = len(rows)
+                target_idx_ranges.append((start, end))
+                group_ids.extend([group_idx] * (end - start))
+
+            flat_context = self._left_pad_and_stack_rows(rows)
+            flat_context = self._finalize_context_batch(flat_context)
+            return (
+                flat_context,
+                torch.tensor(group_ids, dtype=torch.long, device=self._device),
+                target_idx_ranges,
+            )
+
+        tensor = self._as_tensor(context)
+        if tensor.ndim == 1:
+            tensor = tensor.unsqueeze(0)
+            tensor = self._finalize_context_batch(tensor)
+            return tensor, torch.tensor([0], dtype=torch.long, device=self._device), [(0, 1)]
+
+        if tensor.ndim == 2:
+            batch = self._finalize_context_batch(tensor)
+            ranges = [(idx, idx + 1) for idx in range(batch.shape[0])]
+            gids = torch.arange(batch.shape[0], dtype=torch.long, device=self._device)
+            return batch, gids, ranges
+
+        if tensor.ndim == 3:
+            rows = [tensor[batch_idx, variate_idx] for batch_idx in range(tensor.shape[0]) for variate_idx in range(tensor.shape[1])]
+            flat_context = self._left_pad_and_stack_rows(rows)
+            target_idx_ranges = []
+            group_ids = []
+            start = 0
+            for batch_idx in range(tensor.shape[0]):
+                end = start + tensor.shape[1]
+                target_idx_ranges.append((start, end))
+                group_ids.extend([batch_idx] * tensor.shape[1])
+                start = end
+            flat_context = self._finalize_context_batch(flat_context)
+            return (
+                flat_context,
+                torch.tensor(group_ids, dtype=torch.long, device=self._device),
+                target_idx_ranges,
+            )
+
+        raise ValueError(f"context must be 1-D, 2-D, or 3-D, got shape {tuple(tensor.shape)}")
 
     # -- prediction ----------------------------------------------------------
 
@@ -289,18 +365,19 @@ class CuteChronos2Pipeline:
                 raise ValueError(msg)
             warnings.warn(msg)
 
-        ctx = self._prepare_context(context)
+        ctx, group_ids, target_idx_ranges = self._prepare_context(context)
         total_batch = ctx.shape[0]
+        has_multivariate = any((end - start) > 1 for start, end in target_idx_ranges)
 
         num_output_patches = math.ceil(prediction_length / self.model_output_patch_size)
         num_output_patches = min(num_output_patches, self.max_output_patches)
 
-        def _forward_chunk(chunk: torch.Tensor) -> torch.Tensor:
+        def _forward_chunk(chunk: torch.Tensor, chunk_group_ids: torch.Tensor) -> torch.Tensor:
             chunk_size = chunk.shape[0]
             if cross_learning:
                 gids = torch.zeros(chunk_size, dtype=torch.long, device=self._device)
             else:
-                gids = torch.arange(chunk_size, dtype=torch.long, device=self._device)
+                gids = chunk_group_ids
 
             if self._is_cute:
                 return self.model(chunk, num_output_patches=num_output_patches, group_ids=gids)
@@ -313,21 +390,25 @@ class CuteChronos2Pipeline:
                 return output.quantile_preds
 
         if batch_size is not None and batch_size < total_batch:
-            if cross_learning:
-                logger.warning("batch_size chunking disabled for cross_learning=True (would break group attention)")
-                preds = _forward_chunk(ctx)
+            if cross_learning or has_multivariate:
+                logger.warning(
+                    "batch_size chunking disabled for multivariate inputs or cross_learning=True "
+                    "(would break group attention semantics)"
+                )
+                preds = _forward_chunk(ctx, group_ids)
             else:
                 chunks = [ctx[i : i + batch_size] for i in range(0, total_batch, batch_size)]
-                preds = torch.cat([_forward_chunk(c) for c in chunks], dim=0)
+                gid_chunks = [group_ids[i : i + batch_size] for i in range(0, total_batch, batch_size)]
+                preds = torch.cat([_forward_chunk(chunk, gids) for chunk, gids in zip(chunks, gid_chunks)], dim=0)
         else:
-            preds = _forward_chunk(ctx)
+            preds = _forward_chunk(ctx, group_ids)
 
         # preds: (B, Q, H) - truncate to requested length
         preds = preds[..., :prediction_length]
         preds = preds.to(dtype=torch.float32, device="cpu")
 
-        # Return as list of (1, Q, H) tensors for API compatibility
-        return [preds[i : i + 1] for i in range(total_batch)]
+        # Return as list of (n_variates, Q, H) tensors for API compatibility
+        return [preds[start:end] for start, end in target_idx_ranges]
 
     @torch.inference_mode()
     def predict_quantiles(
@@ -336,6 +417,8 @@ class CuteChronos2Pipeline:
         prediction_length: Optional[int] = None,
         quantile_levels: Optional[List[float]] = None,
         limit_prediction_length: bool = True,
+        cross_learning: bool = False,
+        batch_size: Optional[int] = None,
     ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
         """Generate quantile and mean forecasts.
 
@@ -350,6 +433,10 @@ class CuteChronos2Pipeline:
             quantiles.
         limit_prediction_length
             Same as ``predict``.
+        cross_learning
+            Forwarded to ``predict`` so related series can share group attention.
+        batch_size
+            Forwarded to ``predict`` for batched univariate inference.
 
         Returns
         -------
@@ -365,6 +452,8 @@ class CuteChronos2Pipeline:
             context,
             prediction_length=prediction_length,
             limit_prediction_length=limit_prediction_length,
+            cross_learning=cross_learning,
+            batch_size=batch_size,
         )
 
         training_quantile_levels = self.quantiles
