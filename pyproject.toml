@@ -68,6 +68,7 @@ cutedsl-teleport-train = "latentteleport.train:main"
 cutedsl-teleport-benchmark = "latentteleport.benchmark:main"
 cutedsl-teleport-train-sequence = "latentteleport.train_sequence:main"
 cutedsl-teleport-demo = "latentteleport.demo:main"
+cutedsl-tubroquant-benchmark = "tubroquant.chronos_benchmark:main"
 
 [tool.setuptools.packages.find]
 include = ["cutechronos*", "cuteparakeet*", "cutezimage*", "zimageaccelerated*", "latentteleport*"]
@@ -80,9 +81,10 @@ explicit = true
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 torchvision = [{ index = "pytorch-cu128" }]
+include = ["cutechronos*", "cutezimage*", "tubroquant*"]
 
 [tool.pytest.ini_options]
-testpaths = ["cutechronos/tests", "cutezimage/tests", "latentteleport/tests", "tests"]
+testpaths = ["cutechronos/tests", "cutezimage/tests", "latentteleport/tests", "tests", "turboquant/tests"]
 markers = [
     "model_required: tests that require the original chronos-forecasting package",
 ]
