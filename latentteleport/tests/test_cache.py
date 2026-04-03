@@ -3,7 +3,6 @@
 import tempfile
 
 import torch
-import numpy as np
 
 from latentteleport.cache import LatentCache
 from latentteleport.tokenizer import VisualUnit
@@ -60,6 +59,26 @@ class TestLatentCache:
         results = self.cache.find_nearest(query, top_k=2)
         assert len(results) == 2
 
+    def test_find_nearest_handles_matrix_queries_and_large_top_k(self):
+        embeddings = {
+            "cat": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+            "dog": torch.tensor([0.0, 1.0, 0.0, 0.0]),
+            "car": torch.tensor([0.0, 0.0, 1.0, 0.0]),
+        }
+        for name, emb in embeddings.items():
+            unit = VisualUnit.from_text(name)
+            self.cache.store_latents(
+                unit,
+                {0: torch.randn(1, 1, 2, 2)},
+                text_embedding=emb,
+            )
+
+        query = torch.tensor([[3.0, 0.0, 0.0, 0.0]])
+        results = self.cache.find_nearest(query, top_k=10)
+
+        assert [text for _, text, _ in results] == ["cat", "dog", "car"]
+        assert len(results) == 3
+
     def test_stats(self):
         unit = VisualUnit.from_text("tree")
         self.cache.store_latents(unit, {0: torch.randn(16, 1, 64, 64), 1: torch.randn(16, 1, 64, 64)})
@@ -73,3 +92,10 @@ class TestLatentCache:
             self.cache.store_latents(unit, {0: torch.randn(16, 1, 64, 64)})
         units = self.cache.list_units()
         assert len(units) == 3
+
+    def test_load_unit_by_id(self):
+        unit = VisualUnit.from_text("red car")
+        self.cache.store_latents(unit, {0: torch.randn(16, 1, 64, 64)})
+        loaded = self.cache.load_unit_by_id(unit.unit_id)
+        assert loaded is not None
+        assert loaded.text == unit.text

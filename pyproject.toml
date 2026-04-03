@@ -59,10 +59,14 @@ cutedsl-benchmark = "cutechronos.benchmark:main"
 cutedsl-parakeet-benchmark = "cuteparakeet.benchmark:main"
 cutedsl-parakeet-export-onnx = "cuteparakeet.export_onnx:main"
 cutedsl-zimage-benchmark = "cutezimage.benchmark:main"
+cutedsl-zimage-sdcpp-benchmark = "zimageaccelerated.sdcpp_benchmark:main"
 cutedsl-zimageaccelerated-benchmark = "zimageaccelerated.benchmark:main"
 cutedsl-zimageaccelerated-transformer-benchmark = "zimageaccelerated.benchmark_transformer:main"
 cutedsl-zimageaccelerated-gpu-pool = "zimageaccelerated.gpu_pool:main"
 cutedsl-zimageaccelerated-generate-dataset = "zimageaccelerated.generate_dataset:main"
+cutedsl-zimagecontrol-generate-dataset = "zimagecontrol.generate_dataset:main"
+cutedsl-zimagecontrol-train = "zimagecontrol.train:main"
+cutedsl-zimagecontrol-infer = "zimagecontrol.infer:main"
 cutedsl-teleport-generate-cache = "latentteleport.dataset:main"
 cutedsl-teleport-train = "latentteleport.train:main"
 cutedsl-teleport-benchmark = "latentteleport.benchmark:main"
@@ -71,7 +75,7 @@ cutedsl-teleport-demo = "latentteleport.demo:main"
 cutedsl-tubroquant-benchmark = "tubroquant.chronos_benchmark:main"
 
 [tool.setuptools.packages.find]
-include = ["cutechronos*", "cuteparakeet*", "cutezimage*", "zimageaccelerated*", "latentteleport*"]
+include = ["cutechronos*", "cuteparakeet*", "cutezimage*", "zimageaccelerated*", "zimagecontrol*", "latentteleport*"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -81,7 +85,6 @@ explicit = true
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128" }]
 torchvision = [{ index = "pytorch-cu128" }]
-include = ["cutechronos*", "cutezimage*", "tubroquant*"]
 
 [tool.pytest.ini_options]
 testpaths = ["cutechronos/tests", "cutezimage/tests", "latentteleport/tests", "tests", "turboquant/tests"]

@@ -22,6 +22,8 @@ class LatentCache:
         self._units_dir = self._res_dir / "units"
         self._units_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self._res_dir / "index.sqlite"
+        self._embedding_index_dirty = True
+        self._embedding_index: dict[int, tuple[np.ndarray, list[tuple[str, str]]]] = {}
         self._init_db()
 
     def _init_db(self):
@@ -61,10 +63,47 @@ class LatentCache:
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._db_path))
 
+    def _unit_path(self, unit: VisualUnit) -> Path:
+        return self._units_dir / unit.unit_id
+
     def unit_dir(self, unit: VisualUnit) -> Path:
-        d = self._units_dir / unit.unit_id
+        d = self._unit_path(unit)
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def _get_embedding_index(self, embedding_dim: int) -> tuple[np.ndarray, list[tuple[str, str]]]:
+        if self._embedding_index_dirty:
+            self._embedding_index.clear()
+            self._embedding_index_dirty = False
+
+        cached = self._embedding_index.get(embedding_dim)
+        if cached is not None:
+            return cached
+
+        conn = self._conn()
+        rows = conn.execute(
+            "SELECT unit_id, unit_text, clip_embedding FROM units WHERE clip_embedding IS NOT NULL"
+        ).fetchall()
+        conn.close()
+
+        metadata: list[tuple[str, str]] = []
+        embeddings: list[np.ndarray] = []
+        for uid, text, blob in rows:
+            emb = np.frombuffer(blob, dtype=np.float32)
+            if emb.shape[0] != embedding_dim:
+                continue
+            metadata.append((uid, text))
+            embeddings.append(emb)
+
+        if embeddings:
+            matrix = np.stack(embeddings, axis=0)
+            matrix = matrix / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-8)
+        else:
+            matrix = np.empty((0, embedding_dim), dtype=np.float32)
+
+        cached = (matrix, metadata)
+        self._embedding_index[embedding_dim] = cached
+        return cached
 
     def has_unit(self, unit: VisualUnit) -> bool:
         conn = self._conn()
@@ -117,9 +156,10 @@ class LatentCache:
         )
         conn.commit()
         conn.close()
+        self._embedding_index_dirty = True
 
     def load_latent(self, unit: VisualUnit, step_idx: int) -> torch.Tensor | None:
-        d = self.unit_dir(unit)
+        d = self._unit_path(unit)
         path = d / "latents.safetensors"
         if not path.exists():
             return None
@@ -128,7 +168,7 @@ class LatentCache:
         return data.get(key)
 
     def load_text_embedding(self, unit: VisualUnit) -> torch.Tensor | None:
-        d = self.unit_dir(unit)
+        d = self._unit_path(unit)
         path = d / "latents.safetensors"
         if not path.exists():
             return None
@@ -136,7 +176,7 @@ class LatentCache:
         return data.get("text_embedding")
 
     def load_all_latents(self, unit: VisualUnit) -> dict[int, torch.Tensor]:
-        d = self.unit_dir(unit)
+        d = self._unit_path(unit)
         path = d / "latents.safetensors"
         if not path.exists():
             return {}
@@ -152,29 +192,30 @@ class LatentCache:
         self, query_embedding: torch.Tensor | np.ndarray, top_k: int = 5
     ) -> list[tuple[str, str, float]]:
         """Find nearest cached units by CLIP cosine similarity."""
+        if top_k <= 0:
+            return []
+
         if isinstance(query_embedding, torch.Tensor):
             query = query_embedding.cpu().float().numpy()
         else:
-            query = query_embedding.astype(np.float32)
+            query = query_embedding.astype(np.float32, copy=False)
+        query = np.asarray(query, dtype=np.float32).reshape(-1)
         query = query / (np.linalg.norm(query) + 1e-8)
 
-        conn = self._conn()
-        rows = conn.execute(
-            "SELECT unit_id, unit_text, clip_embedding FROM units WHERE clip_embedding IS NOT NULL"
-        ).fetchall()
-        conn.close()
+        matrix, metadata = self._get_embedding_index(query.shape[0])
+        if matrix.shape[0] == 0:
+            return []
 
-        results = []
-        for uid, text, blob in rows:
-            emb = np.frombuffer(blob, dtype=np.float32)
-            if emb.shape[0] != query.shape[0]:
-                continue
-            emb = emb / (np.linalg.norm(emb) + 1e-8)
-            sim = float(np.dot(query, emb))
-            results.append((uid, text, sim))
+        similarities = matrix @ query
 
-        results.sort(key=lambda x: x[2], reverse=True)
-        return results[:top_k]
+        top_k = min(top_k, similarities.shape[0])
+        if top_k == similarities.shape[0]:
+            top_idx = np.argsort(-similarities)
+        else:
+            top_idx = np.argpartition(-similarities, top_k - 1)[:top_k]
+            top_idx = top_idx[np.argsort(-similarities[top_idx])]
+
+        return [(*metadata[idx], float(similarities[idx])) for idx in top_idx.tolist()]
 
     def list_units(self) -> list[tuple[str, str, int]]:
         conn = self._conn()
@@ -183,6 +224,17 @@ class LatentCache:
         ).fetchall()
         conn.close()
         return rows
+
+    def load_unit_by_id(self, unit_id: str) -> VisualUnit | None:
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT unit_text FROM units WHERE unit_id=?",
+            (unit_id,),
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return VisualUnit(text=row[0], unit_id=unit_id)
 
     # --- Bigram Cache ---
 

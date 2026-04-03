@@ -16,8 +16,15 @@ class TeleportConfig:
     width: int = 512
     num_steps: int = 20
     guidance_scale: float = 0.0
+    negative_prompt: str = ""
+    negative_trajectory_scale: float = 0.0
     cache_dir: str = "/vfast/latentteleport/cache"
     seed: int = 42
+    trajectory_top_k: int = 4
+    trajectory_scale: float = 0.35
+    trajectory_virtual_steps: int = 0
+    online_cache_updates: bool = True
+    online_store_bigrams: bool = True
 
 
 @dataclass
@@ -28,6 +35,7 @@ class TokenizerConfig:
     clip_model_id: str = ""
     gobed_binary: str = ""
     curated_vocab_path: str = ""
+    curated_aliases_path: str = ""
 
 
 @dataclass
@@ -74,3 +82,4 @@ class AblationConfig:
     refinement_steps_list: list[int] = field(default_factory=lambda: [0, 1, 3, 5, 7, 10])
     teleport_timesteps: list[float] = field(default_factory=lambda: [0.1, 0.3, 0.5])
     vocab_sizes: list[int] = field(default_factory=lambda: [100, 500, 1000, 5000])
+    trajectory_virtual_steps: list[int] = field(default_factory=lambda: [0, 1, 2])

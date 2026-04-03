@@ -16,6 +16,8 @@ import time
 import torch
 import torch.nn.functional as F
 
+from cutechronos.kernel_backends import rms_layernorm as _rms_layernorm_selected
+from cutechronos.kernel_backends import unscaled_attention as _unscaled_attention_selected
 from cutechronos.modules._fallbacks import (
     apply_rope as _apply_rope_fallback,
     compute_cos_sin as _compute_cos_sin_fallback,
@@ -69,13 +71,13 @@ def _forward_sequential(
     position_ids: torch.Tensor,
 ) -> torch.Tensor:
     batch_size, seq_len, _ = hidden_states.shape
-    normed = _rms_layernorm_fallback(hidden_states, module.layer_norm_weight, module.layer_norm_eps)
+    normed = _rms_layernorm_selected(hidden_states, module.layer_norm_weight, module.layer_norm_eps)
     q = F.linear(normed, module.q.weight).view(batch_size, seq_len, module.num_heads, module.d_kv).transpose(1, 2)
     k = F.linear(normed, module.k.weight).view(batch_size, seq_len, module.num_heads, module.d_kv).transpose(1, 2)
     v = F.linear(normed, module.v.weight).view(batch_size, seq_len, module.num_heads, module.d_kv).transpose(1, 2)
     cos, sin = _compute_cos_sin_fallback(module.inv_freq, position_ids, q.dtype)
     q, k = _apply_rope_fallback(q, k, cos, sin)
-    attn_output = _unscaled_attention_fallback(q, k, v, attention_mask)
+    attn_output = _unscaled_attention_selected(q, k, v, attention_mask)
     attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, module.inner_dim)
     return hidden_states + F.linear(attn_output, module.o.weight)
 
@@ -122,6 +124,15 @@ def _time_call(fn, warmup: int, runs: int) -> float:
     return sum(latencies_ms) / len(latencies_ms)
 
 
+def _forward_runtime(
+    module: FusedTimeSelfAttention,
+    hidden_states: torch.Tensor,
+    attention_mask: torch.Tensor,
+    position_ids: torch.Tensor,
+) -> torch.Tensor:
+    return module(hidden_states, attention_mask, position_ids)[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chronos time-attention microbenchmark")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -166,6 +177,13 @@ def main() -> None:
             args.warmup,
             args.runs,
         )
+        runtime_out = _forward_runtime(module, hidden_states, attention_mask, position_ids)
+        result["runtime_ms"] = _time_call(
+            lambda: _forward_runtime(module, hidden_states, attention_mask, position_ids),
+            args.warmup,
+            args.runs,
+        )
+        result["runtime_max_abs_diff"] = (runtime_out - sequential_out).abs().max().item()
 
         if device.type == "cuda" and _HAS_FUSED_QKV:
             fused_out = _forward_fused_qkv(module, hidden_states, attention_mask, position_ids)

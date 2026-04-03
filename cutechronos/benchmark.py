@@ -165,6 +165,13 @@ def main():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--data-dir", default=None, help="Directory with CSV files (close column required)")
     parser.add_argument("--output", default="benchmark_results.json")
+    parser.add_argument("--compile", action="store_true", help="Also benchmark compiled CuteChronos")
+    parser.add_argument(
+        "--compile-mode",
+        default="reduce-overhead",
+        choices=["default", "reduce-overhead", "max-autotune"],
+        help="torch.compile mode for compiled CuteChronos benchmark",
+    )
     args = parser.parse_args()
 
     # Resolve data directory
@@ -278,6 +285,42 @@ def main():
             torch.cuda.empty_cache()
     except Exception as e:
         print(f"  Failed to load cute pipeline: {e}")
+
+    if args.compile:
+        print("\n--- Loading compiled CuteChronos2Pipeline ---")
+        try:
+            from cutechronos.pipeline import CuteChronos2Pipeline
+
+            compiled_pipe = CuteChronos2Pipeline.from_pretrained(
+                args.model_id,
+                device=args.device,
+                dtype=torch.bfloat16,
+                compile_mode=args.compile_mode,
+            )
+            compiled_quantiles = compiled_pipe.quantiles
+            print(f"  Loaded. quantiles={len(compiled_quantiles)}, device={compiled_pipe.device}")
+
+            result_compiled = benchmark_pipeline(
+                pipeline=compiled_pipe,
+                contexts=contexts,
+                prediction_length=args.prediction_length,
+                quantiles=compiled_quantiles,
+                actuals=actuals,
+                n_warmup=args.n_warmup,
+                n_runs=args.n_runs,
+                label=f"cute_chronos2_compiled_{args.compile_mode}",
+            )
+            results["cute_chronos2_compiled"] = result_compiled
+            print(f"  Avg latency: {result_compiled['avg_latency_ms']:.1f} ms")
+            print(f"  Avg MAE: {result_compiled['avg_mae']:.4f}")
+            print(f"  Peak GPU mem: {result_compiled['peak_gpu_memory_mb']:.1f} MB")
+
+            del compiled_pipe
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"  Failed to load compiled cute pipeline: {e}")
 
     # 3. Comparison table
     print("\n" + "=" * 72)

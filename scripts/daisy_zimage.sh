@@ -9,6 +9,7 @@ DAISY_USER="${DAISY_USER:-lee}"
 DAISY_PORT="${DAISY_PORT:-22}"
 DAISY_REMOTE_ROOT="${DAISY_REMOTE_ROOT:-/mnt/fast/code}"
 DAISY_REMOTE_REPO="${DAISY_REMOTE_REPO:-${DAISY_REMOTE_ROOT}/cutedsl}"
+DAISY_PYTHON="${DAISY_PYTHON:-python3}"
 DAISY_HF_HOME="${DAISY_HF_HOME:-${DAISY_REMOTE_ROOT}/.cache/huggingface}"
 DAISY_UV_CACHE="${DAISY_UV_CACHE:-${DAISY_REMOTE_ROOT}/.cache/uv}"
 DAISY_EXTRAS="${DAISY_EXTRAS:-zimage}"
@@ -54,11 +55,11 @@ bootstrap() {
     set -euo pipefail
     mkdir -p '${DAISY_HF_HOME}' '${DAISY_UV_CACHE}'
     cd '${DAISY_REMOTE_REPO}'
-    python3 -m pip install --user uv >/tmp/cutedsl_daisy_uv_install.log 2>&1 || (cat /tmp/cutedsl_daisy_uv_install.log && exit 1)
+    '${DAISY_PYTHON}' -m pip install --user uv >/tmp/cutedsl_daisy_uv_install.log 2>&1 || (cat /tmp/cutedsl_daisy_uv_install.log && exit 1)
     export PATH=\"\$HOME/.local/bin:\$PATH\"
     export UV_CACHE_DIR='${DAISY_UV_CACHE}'
     export HF_HOME='${DAISY_HF_HOME}'
-    uv sync --python python3 ${extra_args[*]}
+    uv sync --python '${DAISY_PYTHON}' ${extra_args[*]}
   "
 }
 
@@ -126,7 +127,11 @@ status() {
     hostname
     nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader
     df -h '${DAISY_REMOTE_ROOT}'
-    test -x '${DAISY_REMOTE_REPO}/.venv/bin/python' && '${DAISY_REMOTE_REPO}/.venv/bin/python' -c 'import sys; print(sys.version)'
+    if test -x '${DAISY_REMOTE_REPO}/.venv/bin/python'; then
+      '${DAISY_REMOTE_REPO}/.venv/bin/python' -c 'import sys; print(sys.version)'
+    else
+      echo '[daisy_zimage] no virtualenv at ${DAISY_REMOTE_REPO}/.venv'
+    fi
   "
 }
 
@@ -143,6 +148,7 @@ Usage:
 Environment:
   DAISY_PASS can be set to use sshpass automatically.
   DAISY_HOST, DAISY_USER, DAISY_PORT, DAISY_REMOTE_ROOT can override defaults.
+  DAISY_PYTHON selects the remote interpreter used for uv bootstrap, defaulting to "python3".
   DAISY_EXTRAS controls uv extras for bootstrap, defaulting to "zimage".
 EOF
 }

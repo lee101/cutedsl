@@ -51,6 +51,20 @@ class TestCuratedTokenizer:
         units = tok.tokenize("xyzzy")
         assert len(units) >= 1
 
+    def test_plural_aliases_are_canonicalized(self):
+        tok = CuratedTokenizer()
+        units = tok.tokenize("grasses and boxes near the beaches")
+        texts = [u.text for u in units]
+        assert "grass" in texts
+        assert "box" in texts
+        assert "beach" in texts
+
+    def test_duplicate_aliases_are_deduped(self):
+        tok = CuratedTokenizer()
+        units = tok.tokenize("cars car")
+        texts = [u.text for u in units]
+        assert texts.count("car") == 1
+
 
 @pytest.mark.skipif(not _has_spacy(), reason="spacy not installed")
 class TestNLPTokenizer:

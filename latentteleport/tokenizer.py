@@ -48,16 +48,36 @@ class NLPTokenizer:
 # --- Curated Dictionary Strategy ---
 
 class CuratedTokenizer:
-    def __init__(self, vocab_path: str | None = None):
+    def __init__(self, vocab_path: str | None = None, aliases_path: str | None = None):
         self._vocab: list[str] = []
         if vocab_path and Path(vocab_path).exists():
             self._vocab = json.loads(Path(vocab_path).read_text())
         if not self._vocab:
             self._vocab = _DEFAULT_VISUAL_VOCAB
+        self._aliases = dict(_DEFAULT_ALIAS_MAP)
+        if aliases_path and Path(aliases_path).exists():
+            self._aliases.update(json.loads(Path(aliases_path).read_text()))
+        self._vocab = [self._canonicalize(term) for term in self._vocab]
         self._sorted = sorted(self._vocab, key=len, reverse=True)
 
+    def _canonicalize(self, text: str) -> str:
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+        normalized = re.sub(r"[^a-z0-9\s-]", "", normalized)
+        words = []
+        for word in normalized.split():
+            alias = self._aliases.get(word, word)
+            if alias.endswith("es") and len(alias) > 4 and alias[:-2] in self._vocab:
+                alias = alias[:-2]
+            elif alias.endswith("s") and len(alias) > 3 and not alias.endswith("ss"):
+                singular = alias[:-1]
+                if singular in self._vocab or singular in _DEFAULT_VISUAL_VOCAB_SET:
+                    alias = singular
+            words.append(alias)
+        normalized = " ".join(words)
+        return self._aliases.get(normalized, normalized)
+
     def tokenize(self, prompt: str) -> list[VisualUnit]:
-        lower = prompt.lower()
+        lower = self._canonicalize(prompt)
         units = []
         remaining = lower
         for term in self._sorted:
@@ -67,12 +87,19 @@ class CuratedTokenizer:
         remaining = remaining.strip()
         if remaining and len(remaining) > 2:
             for part in re.split(r"\s{2,}|,\s*", remaining):
-                part = part.strip()
+                part = self._canonicalize(part)
                 if len(part) > 2:
                     units.append(VisualUnit.from_text(part))
         if not units:
-            units = [VisualUnit.from_text(prompt.strip())]
-        return units
+            units = [VisualUnit.from_text(self._canonicalize(prompt.strip()))]
+        deduped = []
+        seen: set[str] = set()
+        for unit in units:
+            if unit.text in seen:
+                continue
+            deduped.append(unit)
+            seen.add(unit.text)
+        return deduped
 
 
 # --- CLIP-Clustered Strategy ---
@@ -119,7 +146,7 @@ def create_tokenizer(config: TokenizerConfig) -> TokenizerStrategy:
     if config.strategy == "nlp":
         return NLPTokenizer(config.spacy_model)
     elif config.strategy == "curated":
-        return CuratedTokenizer(config.curated_vocab_path)
+        return CuratedTokenizer(config.curated_vocab_path, config.curated_aliases_path)
     elif config.strategy == "clip":
         return CLIPClusteredTokenizer(
             centroids_path=config.curated_vocab_path.replace(".json", "_centroids.npy"),
@@ -132,6 +159,7 @@ _DEFAULT_VISUAL_VOCAB = [
     "person", "man", "woman", "child", "girl", "boy",
     "cat", "dog", "bird", "horse", "fish", "butterfly",
     "tree", "flower", "forest", "mountain", "river", "ocean", "lake", "waterfall",
+    "grass", "box", "cube",
     "sky", "cloud", "sun", "moon", "star", "rainbow", "sunset", "sunrise",
     "house", "building", "castle", "tower", "bridge", "road", "path",
     "car", "train", "boat", "ship", "airplane", "bicycle",
@@ -149,3 +177,34 @@ _DEFAULT_VISUAL_VOCAB = [
     "painting", "photograph", "illustration", "sketch", "watercolor",
     "cinematic", "dramatic", "peaceful", "mysterious", "whimsical",
 ]
+
+_DEFAULT_VISUAL_VOCAB_SET = set(_DEFAULT_VISUAL_VOCAB)
+
+_DEFAULT_ALIAS_MAP = {
+    "grasses": "grass",
+    "grasslands": "grass",
+    "boxes": "box",
+    "cubes": "cube",
+    "cars": "car",
+    "cats": "cat",
+    "dogs": "dog",
+    "wolves": "wolf",
+    "mountains": "mountain",
+    "trees": "tree",
+    "flowers": "flower",
+    "books": "book",
+    "robots": "robot",
+    "dragons": "dragon",
+    "fairies": "fairy",
+    "astronauts": "astronaut",
+    "knights": "knight",
+    "wizards": "wizard",
+    "ships": "ship",
+    "boats": "boat",
+    "houses": "house",
+    "beaches": "beach",
+    "forests": "forest",
+    "windowsills": "windowsill",
+    "sunsets": "sunset",
+    "sunrises": "sunrise",
+}

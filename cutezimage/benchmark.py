@@ -225,6 +225,12 @@ def main():
     parser.add_argument("--compile-mode", default="reduce-overhead",
                         choices=["default", "reduce-overhead", "max-autotune"],
                         help="torch.compile mode (default: reduce-overhead)")
+    parser.add_argument(
+        "--transformer-variant",
+        default="cute",
+        choices=["cute", "accelerated"],
+        help="Cute transformer implementation to benchmark against diffusers",
+    )
     parser.add_argument("--sdpa-backend", default=None,
                         choices=["flash", "math", "efficient", "cudnn"],
                         help="Force specific SDPA backend (default: auto)")
@@ -257,15 +263,25 @@ def main():
     # ------------------------------------------------------------------
     # 2. Create CuteZImage from diffusers weights
     # ------------------------------------------------------------------
-    print("\n--- Creating CuteZImageTransformer from diffusers weights ---")
-    from cutezimage.model import CuteZImageTransformer
+    print(f"\n--- Creating {args.transformer_variant} Z-Image transformer from diffusers weights ---")
+    if args.transformer_variant == "accelerated":
+        from zimageaccelerated.model import AcceleratedZImageTransformer
 
-    if args.compile:
-        cute_transformer = CuteZImageTransformer.from_diffusers_compiled(
-            orig_transformer, compile_mode=args.compile_mode
-        )
+        if args.compile:
+            cute_transformer = AcceleratedZImageTransformer.from_diffusers_compiled(
+                orig_transformer, compile_mode=args.compile_mode
+            )
+        else:
+            cute_transformer = AcceleratedZImageTransformer.from_diffusers(orig_transformer)
     else:
-        cute_transformer = CuteZImageTransformer.from_diffusers(orig_transformer)
+        from cutezimage.model import CuteZImageTransformer
+
+        if args.compile:
+            cute_transformer = CuteZImageTransformer.from_diffusers_compiled(
+                orig_transformer, compile_mode=args.compile_mode
+            )
+        else:
+            cute_transformer = CuteZImageTransformer.from_diffusers(orig_transformer)
     cute_transformer = cute_transformer.to(args.device, torch.bfloat16)
     print(f"  Created. Parameters: {cute_transformer.parameter_count():,}")
 
@@ -344,12 +360,13 @@ def main():
         print(f"  Original: {result_orig['avg_latency_ms']:.1f} ms "
               f"(std={result_orig['std_latency_ms']:.1f}, min={result_orig['min_latency_ms']:.1f})")
 
+        candidate_label = f"{args.transformer_variant}_zimage"
         result_cute = benchmark_transformer(
             cute_transformer, x_synth, t_synth, cap_synth,
-            n_warmup=n_warmup, n_runs=args.n_runs, label="cute_zimage",
+            n_warmup=n_warmup, n_runs=args.n_runs, label=candidate_label,
         )
-        results["cute_zimage"] = result_cute
-        print(f"  CuteZImage: {result_cute['avg_latency_ms']:.1f} ms "
+        results[candidate_label] = result_cute
+        print(f"  {args.transformer_variant} ZImage: {result_cute['avg_latency_ms']:.1f} ms "
               f"(std={result_cute['std_latency_ms']:.1f}, min={result_cute['min_latency_ms']:.1f})")
 
         speedup = result_orig["avg_latency_ms"] / max(result_cute["avg_latency_ms"], 1e-9)
@@ -384,17 +401,17 @@ def main():
         print(f"  Original pipeline: {result_orig_pipe['avg_latency_ms']:.0f} ms")
 
         # Replace transformer with CuteZImage
-        print("  Replacing transformer with CuteZImage...")
+        print(f"  Replacing transformer with {args.transformer_variant} ZImage...")
         pipe.transformer = cute_transformer
 
         result_cute_pipe = benchmark_pipeline_e2e(
             pipe, args.prompt, args.width, args.height, args.seed,
             args.num_inference_steps, args.guidance_scale,
-            n_warmup=1, n_runs=3, label="cute_pipeline",
+            n_warmup=1, n_runs=3, label=f"{args.transformer_variant}_pipeline",
         )
         cute_image = result_cute_pipe.pop("image")
-        results["cute_pipeline"] = result_cute_pipe
-        print(f"  CuteZImage pipeline: {result_cute_pipe['avg_latency_ms']:.0f} ms")
+        results[f"{args.transformer_variant}_pipeline"] = result_cute_pipe
+        print(f"  {args.transformer_variant} ZImage pipeline: {result_cute_pipe['avg_latency_ms']:.0f} ms")
 
         pipe_speedup = result_orig_pipe["avg_latency_ms"] / max(result_cute_pipe["avg_latency_ms"], 1e-9)
         print(f"  Pipeline speedup: {pipe_speedup:.2f}x")
@@ -420,7 +437,7 @@ def main():
         output_dir = repo_root / "benchmark_images"
         output_dir.mkdir(exist_ok=True)
         orig_image.save(output_dir / "original.png")
-        cute_image.save(output_dir / "cute.png")
+        cute_image.save(output_dir / f"{args.transformer_variant}.png")
         print(f"  Images saved to {output_dir}/")
 
     # ------------------------------------------------------------------
@@ -430,6 +447,7 @@ def main():
         "compile": args.compile,
         "compile_mode": args.compile_mode if args.compile else None,
         "sdpa_backend": args.sdpa_backend or "auto",
+        "transformer_variant": args.transformer_variant,
     }
 
     # ------------------------------------------------------------------
@@ -447,7 +465,7 @@ def main():
     header = f"{'Model':<25} {'Latency(ms)':<15} {'GPU(MB)':<15}"
     print(header)
     print("-" * 72)
-    for key in ["original_zimage", "cute_zimage"]:
+    for key in ["original_zimage", f"{args.transformer_variant}_zimage"]:
         if key in results:
             res = results[key]
             print(f"{res['label']:<25} {res['avg_latency_ms']:<15.1f} {res['peak_gpu_memory_mb']:<15.1f}")

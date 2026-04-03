@@ -203,6 +203,11 @@ def _get_fused_qk_norm():
     return None
 
 
+def _fused_qkv_enabled() -> bool:
+    setting = os.environ.get("CUTEZIMAGE_FUSED_QKV", "1").strip().lower()
+    return setting not in {"0", "false", "no", "off"}
+
+
 
 # ---------------------------------------------------------------------------
 # Sub-modules
@@ -310,6 +315,9 @@ class CuteZImageTransformerBlock(nn.Module):
         self.head_dim = dim // n_heads
         self.layer_id = layer_id
         self.modulation = modulation
+        self.use_fused_qkv = n_heads == n_kv_heads
+        self._qkv_weight_cache: torch.Tensor | None = None
+        self._qkv_weight_cache_meta: tuple[int, int, int, torch.device, torch.dtype] | None = None
 
         # Attention projections
         self.q_proj = nn.Linear(dim, dim, bias=False)
@@ -339,6 +347,27 @@ class CuteZImageTransformerBlock(nn.Module):
                 nn.Linear(min(dim, ADALN_EMBED_DIM), 4 * dim, bias=True)
             )
 
+    def _get_fused_qkv_weight(self) -> torch.Tensor:
+        q_weight = self.q_proj.weight
+        k_weight = self.k_proj.weight
+        v_weight = self.v_proj.weight
+        meta = (q_weight._version, k_weight._version, v_weight._version, q_weight.device, q_weight.dtype)
+        if self._qkv_weight_cache is None or self._qkv_weight_cache_meta != meta:
+            self._qkv_weight_cache = torch.cat([q_weight, k_weight, v_weight], dim=0).contiguous()
+            self._qkv_weight_cache_meta = meta
+        return self._qkv_weight_cache
+
+    def _project_qkv(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.use_fused_qkv and not self.training and _fused_qkv_enabled():
+            qkv = F.linear(x, self._get_fused_qkv_weight())
+            q, k, v = torch.split(
+                qkv,
+                [self.dim, self.n_kv_heads * self.head_dim, self.n_kv_heads * self.head_dim],
+                dim=-1,
+            )
+            return q, k, v
+        return self.q_proj(x), self.k_proj(x), self.v_proj(x)
+
     def _apply_attention(
         self,
         x: torch.Tensor,
@@ -347,9 +376,10 @@ class CuteZImageTransformerBlock(nn.Module):
     ) -> torch.Tensor:
         B, S, D = x.shape
 
-        q = self.q_proj(x).unflatten(-1, (self.n_heads, self.head_dim))
-        k = self.k_proj(x).unflatten(-1, (self.n_kv_heads, self.head_dim))
-        v = self.v_proj(x).unflatten(-1, (self.n_kv_heads, self.head_dim))
+        q, k, v = self._project_qkv(x)
+        q = q.unflatten(-1, (self.n_heads, self.head_dim))
+        k = k.unflatten(-1, (self.n_kv_heads, self.head_dim))
+        v = v.unflatten(-1, (self.n_kv_heads, self.head_dim))
 
         if self.qk_norm:
             _fqk = _get_fused_qk_norm() if q.is_cuda and self.n_kv_heads == self.n_heads else None
@@ -362,8 +392,13 @@ class CuteZImageTransformerBlock(nn.Module):
         # Apply RoPE
         if freqs_cis is not None:
             rope_fn = _get_rope_complex() if q.is_cuda else _apply_rope_complex_fallback
-            q = rope_fn(q, freqs_cis)
-            k = rope_fn(k, freqs_cis)
+            if self.use_fused_qkv and _fused_qkv_enabled():
+                qk = torch.cat([q, k], dim=2)
+                qk = rope_fn(qk, freqs_cis)
+                q, k = torch.split(qk, [self.n_heads, self.n_kv_heads], dim=2)
+            else:
+                q = rope_fn(q, freqs_cis)
+                k = rope_fn(k, freqs_cis)
 
         # Reshape for SDPA: (B, H, S, D)
         q = q.transpose(1, 2)
@@ -889,6 +924,8 @@ class CuteZImageTransformer(nn.Module):
         )
 
         cute = cls(config)
+        ref_param = next(model.parameters())
+        cute.to(device=ref_param.device, dtype=ref_param.dtype)
         cute._copy_weights_from_diffusers(model)
         cute.eval()
         return cute

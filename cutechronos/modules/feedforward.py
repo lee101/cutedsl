@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cutechronos.modules._fallbacks import rms_layernorm
+from cutechronos.kernel_backends import rms_layernorm
 
 
 class FusedFeedForward(nn.Module):

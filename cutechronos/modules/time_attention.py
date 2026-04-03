@@ -2,7 +2,7 @@
 
 Replaces the original TimeSelfAttention (RMSNorm -> QKV proj -> RoPE ->
 unscaled attention -> O proj -> residual) with a streamlined version that
-uses Triton kernels when available and pure-PyTorch fallbacks otherwise.
+dispatches across CUTLASS, SDPA, Triton, and PyTorch backends.
 
 cuBLAS-backed F.linear is used for the QKV / O projections (already fast
 for 768x768).
@@ -14,11 +14,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from cutechronos.kernel_backends import (
+    fused_rms_norm_qkv,
+    fused_rms_norm_qkv_available,
+    rms_layernorm,
+    unscaled_attention,
+)
 from cutechronos.modules._fallbacks import (
-    rms_layernorm as _rms_layernorm_fallback,
     apply_rope as _apply_rope_fallback,
     compute_cos_sin as _compute_cos_sin_fallback,
-    unscaled_attention as _unscaled_attention_fallback,
 )
 
 # ---------------------------------------------------------------------------
@@ -26,30 +30,10 @@ from cutechronos.modules._fallbacks import (
 # ---------------------------------------------------------------------------
 
 try:
-    from cutechronos.triton_kernels.rms_layernorm import rms_layernorm as _rms_layernorm_triton
-    _has_triton_rms = True
-except (ImportError, ModuleNotFoundError):
-    _has_triton_rms = False
-
-try:
     from cutechronos.triton_kernels.rope import apply_rope as _triton_apply_rope
     _has_triton_rope = True
 except (ImportError, ModuleNotFoundError):
     _has_triton_rope = False
-
-try:
-    from cutechronos.triton_kernels.attention import unscaled_attention as _unscaled_attention_triton
-    _has_triton_attn = True
-except (ImportError, ModuleNotFoundError):
-    _has_triton_attn = False
-
-try:
-    from cutechronos.triton_kernels.fused_layernorm_linear import (
-        fused_rms_norm_qkv as _fused_rms_norm_qkv_triton,
-    )
-    _has_triton_fused_qkv = True
-except (ImportError, ModuleNotFoundError):
-    _has_triton_fused_qkv = False
 
 
 class FusedTimeSelfAttention(nn.Module):
@@ -133,8 +117,8 @@ class FusedTimeSelfAttention(nn.Module):
         # 1-3. RMS LayerNorm + QKV projections.
         # Prefer the fused Triton path to avoid materializing the normalized
         # intermediate and to reuse the normalized row across Q/K/V.
-        if on_cuda and _has_triton_fused_qkv:
-            query_states, key_states, value_states = _fused_rms_norm_qkv_triton(
+        if fused_rms_norm_qkv_available(hidden_states):
+            query_states, key_states, value_states = fused_rms_norm_qkv(
                 hidden_states,
                 self.layer_norm_weight,
                 self.q.weight,
@@ -143,11 +127,7 @@ class FusedTimeSelfAttention(nn.Module):
                 self.layer_norm_eps,
             )
         else:
-            if on_cuda and _has_triton_rms:
-                normed = _rms_layernorm_triton(hidden_states, self.layer_norm_weight, self.layer_norm_eps)
-            else:
-                normed = _rms_layernorm_fallback(hidden_states, self.layer_norm_weight, self.layer_norm_eps)
-
+            normed = rms_layernorm(hidden_states, self.layer_norm_weight, self.layer_norm_eps)
             query_states = F.linear(normed, self.q.weight)
             key_states = F.linear(normed, self.k.weight)
             value_states = F.linear(normed, self.v.weight)
@@ -171,10 +151,7 @@ class FusedTimeSelfAttention(nn.Module):
             )
 
         # 5. Unscaled attention
-        if on_cuda and _has_triton_attn:
-            attn_output = _unscaled_attention_triton(query_states, key_states, value_states, attention_mask)
-        else:
-            attn_output = _unscaled_attention_fallback(query_states, key_states, value_states, attention_mask)
+        attn_output = unscaled_attention(query_states, key_states, value_states, attention_mask)
 
         # 6. Reshape (B, H, S, d_kv) -> (B, S, inner_dim) and O projection
         attn_output = attn_output.transpose(1, 2).contiguous().view(B, S, self.inner_dim)

@@ -3,8 +3,8 @@
 Assembles all kernel modules into a complete Chronos2 model that can load
 HuggingFace checkpoint weights and produce identical outputs to the original.
 
-Uses pure PyTorch fallback implementations for all submodules, with optional
-Triton kernel swapins when available.
+Uses vendor-backed CUDA kernels where they are demonstrably faster on the
+current device, with pure PyTorch fallbacks when unavailable.
 
 Memory optimizations applied:
 - .reshape() instead of .contiguous().view() to avoid unnecessary copies
@@ -28,6 +28,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from cutechronos.kernel_backends import (
+    fused_rms_norm_qkv,
+    fused_rms_norm_qkv_available,
+    rms_layernorm,
+    unscaled_attention,
+)
+
 try:
     from safetensors.torch import load_file as safetensors_load_file
 except ImportError:
@@ -40,25 +47,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 try:
-    from cutechronos.triton_kernels.rms_layernorm import rms_layernorm as _triton_rms_layernorm
-    _HAS_TRITON_RMS = True
-except (ImportError, ModuleNotFoundError):
-    _HAS_TRITON_RMS = False
-
-try:
     from cutechronos.triton_kernels.rope import apply_rope as _triton_apply_rope
     _HAS_TRITON_ROPE = True
 except (ImportError, ModuleNotFoundError):
     _HAS_TRITON_ROPE = False
-
-try:
-    from cutechronos.triton_kernels.fused_layernorm_linear import (
-        fused_rms_norm_qkv as _triton_fused_rms_norm_qkv,
-    )
-    _HAS_TRITON_FUSED_QKV = True
-except (ImportError, ModuleNotFoundError):
-    _HAS_TRITON_FUSED_QKV = False
-
 
 # ---------------------------------------------------------------------------
 # Config dataclass (mirrors Chronos2ForecastingConfig)
@@ -97,22 +89,6 @@ class CuteChronos2Config:
         self.num_quantiles = len(self.quantiles)
         if self.time_encoding_scale is None:
             self.time_encoding_scale = self.context_length
-
-
-# ---------------------------------------------------------------------------
-# Pure PyTorch fallback building blocks
-# ---------------------------------------------------------------------------
-
-def rms_layernorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    """T5-style RMS LayerNorm: no mean subtraction, FP32 variance."""
-    if _HAS_TRITON_RMS and x.is_cuda:
-        return _triton_rms_layernorm(x, weight, eps)
-    variance = x.float().pow(2).mean(-1, keepdim=True)
-    x = x * torch.rsqrt(variance + eps)
-    if weight.dtype in (torch.float16, torch.bfloat16):
-        x = x.to(weight.dtype)
-    return weight * x
-
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     x1 = x[..., : x.shape[-1] // 2]
@@ -237,8 +213,8 @@ class TimeSelfAttentionFallback(nn.Module):
         position_ids: torch.Tensor,
     ) -> torch.Tensor:
         B, S, _ = hidden_states.shape
-        if _HAS_TRITON_FUSED_QKV and hidden_states.is_cuda:
-            q, k, v = _triton_fused_rms_norm_qkv(
+        if fused_rms_norm_qkv_available(hidden_states):
+            q, k, v = fused_rms_norm_qkv(
                 hidden_states,
                 self.layer_norm_weight,
                 self.q.weight,
@@ -289,7 +265,7 @@ class TimeSelfAttentionFallback(nn.Module):
         else:
             self.last_quantization_stats = None
 
-        attn_output = unscaled_attention_fallback(q, k, v, attention_mask)
+        attn_output = unscaled_attention(q, k, v, attention_mask)
         # reshape avoids the allocation from .contiguous()
         attn_output = attn_output.transpose(1, 2).reshape(B, S, self.inner_dim)
         attn_output = F.linear(attn_output, self.o.weight)

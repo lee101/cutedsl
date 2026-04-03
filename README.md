@@ -343,6 +343,21 @@ The compiled mode uses `torch.compile(mode="reduce-overhead")` which captures CU
 
 Architecture: 30 main layers + 2 refiner layers, dim=3840, 30 heads, SiLU-gated FFN (hidden=10240).
 
+There is also a pure `stable-diffusion.cpp` Z-Image benchmark path for testing the "all C/C++ runtime" direction against the Python backends:
+
+```bash
+./scripts/setup_external_zimage.sh --build-sdcpp
+python scripts/download_zimage_lowvram_weights.py
+
+python -m zimageaccelerated.sdcpp_benchmark \
+  --offload-to-cpu \
+  --diffusion-fa \
+  --vae-tiling \
+  --clip-on-cpu
+```
+
+That writes a benchmark JSON file plus the generated image under `benchmark_images/sdcpp/`, and gives us a concrete baseline before attempting deeper C/CUDA rewrites of Z-Image-specific kernels or cache paths.
+
 ## Project Structure
 
 ```

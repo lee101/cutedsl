@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from cutezimage.model import (
     ADALN_EMBED_DIM,
+    CuteZImageConfig,
     CuteZImageTransformer,
     RMSNorm,
     SiLUGatedFFN,
@@ -334,5 +335,132 @@ class AcceleratedZImageTransformer(CuteZImageTransformer):
 
     @classmethod
     def from_diffusers(cls, model: "ZImageTransformer2DModel") -> "AcceleratedZImageTransformer":
-        base = CuteZImageTransformer.from_diffusers(model)
-        return cls.from_cutezimage(base)
+        cfg = model.config
+        config = CuteZImageConfig(
+            patch_size=cfg.all_patch_size[0],
+            f_patch_size=cfg.all_f_patch_size[0],
+            in_channels=cfg.in_channels,
+            dim=cfg.dim,
+            n_layers=cfg.n_layers,
+            n_refiner_layers=cfg.n_refiner_layers,
+            n_heads=cfg.n_heads,
+            n_kv_heads=cfg.n_kv_heads,
+            norm_eps=cfg.norm_eps,
+            qk_norm=cfg.qk_norm,
+            cap_feat_dim=cfg.cap_feat_dim,
+            rope_theta=cfg.rope_theta,
+            t_scale=cfg.t_scale,
+            axes_dims=list(cfg.axes_dims),
+            axes_lens=list(cfg.axes_lens),
+        )
+        accelerated = cls(config)
+        ref_param = next(model.parameters())
+        accelerated.to(device=ref_param.device, dtype=ref_param.dtype)
+        accelerated._copy_weights_from_diffusers(model)
+        accelerated.eval()
+        return accelerated
+
+    def _copy_weights_from_diffusers(self, orig) -> None:
+        """Copy weights directly from the diffusers transformer in one pass."""
+        sd = orig.state_dict()
+
+        with torch.no_grad():
+            ps = f"{self.config.patch_size}-{self.config.f_patch_size}"
+            self.x_embedder.weight.copy_(sd[f"all_x_embedder.{ps}.weight"])
+            self.x_embedder.bias.copy_(sd[f"all_x_embedder.{ps}.bias"])
+
+            self.cap_embedder[0].weight.copy_(sd["cap_embedder.0.weight"])
+            self.cap_embedder[1].weight.copy_(sd["cap_embedder.1.weight"])
+            self.cap_embedder[1].bias.copy_(sd["cap_embedder.1.bias"])
+
+            self.t_embedder.mlp[0].weight.copy_(sd["t_embedder.mlp.0.weight"])
+            self.t_embedder.mlp[0].bias.copy_(sd["t_embedder.mlp.0.bias"])
+            self.t_embedder.mlp[2].weight.copy_(sd["t_embedder.mlp.2.weight"])
+            self.t_embedder.mlp[2].bias.copy_(sd["t_embedder.mlp.2.bias"])
+
+            self.x_pad_token.copy_(sd["x_pad_token"])
+            self.cap_pad_token.copy_(sd["cap_pad_token"])
+
+            self.final_layer.linear.weight.copy_(sd[f"all_final_layer.{ps}.linear.weight"])
+            self.final_layer.linear.bias.copy_(sd[f"all_final_layer.{ps}.linear.bias"])
+            self.final_layer.adaLN_modulation[1].weight.copy_(sd[f"all_final_layer.{ps}.adaLN_modulation.1.weight"])
+            self.final_layer.adaLN_modulation[1].bias.copy_(sd[f"all_final_layer.{ps}.adaLN_modulation.1.bias"])
+
+            self._copy_block_weights_from_diffusers(self.noise_refiner, sd, "noise_refiner")
+            self._copy_block_weights_from_diffusers(self.context_refiner, sd, "context_refiner")
+            self._copy_block_weights_from_diffusers(self.layers, sd, "layers")
+
+    @staticmethod
+    def _copy_block_weights_from_diffusers(blocks: nn.ModuleList, sd: dict, prefix: str) -> None:
+        for i, block in enumerate(blocks):
+            p = f"{prefix}.{i}"
+
+            if block.use_fused_qkv:
+                block.qkv_proj.weight.copy_(
+                    torch.cat(
+                        [
+                            sd[f"{p}.attention.to_q.weight"],
+                            sd[f"{p}.attention.to_k.weight"],
+                            sd[f"{p}.attention.to_v.weight"],
+                        ],
+                        dim=0,
+                    )
+                )
+            else:
+                block.q_proj.weight.copy_(sd[f"{p}.attention.to_q.weight"])
+                block.k_proj.weight.copy_(sd[f"{p}.attention.to_k.weight"])
+                block.v_proj.weight.copy_(sd[f"{p}.attention.to_v.weight"])
+
+            block.o_proj.weight.copy_(sd[f"{p}.attention.to_out.0.weight"])
+
+            if block.qk_norm:
+                block.q_norm.weight.copy_(sd[f"{p}.attention.norm_q.weight"])
+                block.k_norm.weight.copy_(sd[f"{p}.attention.norm_k.weight"])
+
+            block.feed_forward.w1.weight.copy_(sd[f"{p}.feed_forward.w1.weight"])
+            block.feed_forward.w2.weight.copy_(sd[f"{p}.feed_forward.w2.weight"])
+            block.feed_forward.w3.weight.copy_(sd[f"{p}.feed_forward.w3.weight"])
+
+            block.attention_norm1.weight.copy_(sd[f"{p}.attention_norm1.weight"])
+            block.attention_norm2.weight.copy_(sd[f"{p}.attention_norm2.weight"])
+            block.ffn_norm1.weight.copy_(sd[f"{p}.ffn_norm1.weight"])
+            block.ffn_norm2.weight.copy_(sd[f"{p}.ffn_norm2.weight"])
+
+            if block.modulation:
+                block.adaLN_modulation[0].weight.copy_(sd[f"{p}.adaLN_modulation.0.weight"])
+                block.adaLN_modulation[0].bias.copy_(sd[f"{p}.adaLN_modulation.0.bias"])
+
+    @staticmethod
+    def _apply_compile(
+        model: "AcceleratedZImageTransformer",
+        compile_mode: str,
+    ) -> "AcceleratedZImageTransformer":
+        if hasattr(torch, "compile"):
+            try:
+                model.forward = torch.compile(  # type: ignore[assignment]
+                    model.forward,
+                    mode=compile_mode,
+                    fullgraph=False,
+                )
+                print(f"[zimageaccelerated] torch.compile enabled (mode={compile_mode}).")
+            except Exception as exc:
+                print(f"[zimageaccelerated] torch.compile failed ({exc}); using eager mode.")
+        return model
+
+    @classmethod
+    def from_cutezimage_compiled(
+        cls,
+        model: CuteZImageTransformer,
+        compile_mode: str = "reduce-overhead",
+    ) -> "AcceleratedZImageTransformer":
+        accelerated = cls.from_cutezimage(model)
+        return cls._apply_compile(accelerated, compile_mode)
+
+    @classmethod
+    def from_diffusers_compiled(
+        cls,
+        model: "ZImageTransformer2DModel",
+        compile_mode: str = "reduce-overhead",
+    ) -> "AcceleratedZImageTransformer":
+        accelerated = cls.from_diffusers(model)
+        return cls._apply_compile(accelerated, compile_mode)

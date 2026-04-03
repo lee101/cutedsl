@@ -1,8 +1,8 @@
 """CuteChronos2Pipeline -- drop-in pipeline for Chronos-2 inference.
 
 Supports two backends:
-- ``use_cute=True`` (default): Uses CuteChronos2Model with custom Triton
-  kernels and optional torch.compile for maximum performance.
+- ``use_cute=True`` (default): Uses CuteChronos2Model with CUTLASS/SDPA/Triton
+  kernel dispatch and optional torch.compile for maximum performance.
 - ``use_cute=False``: Delegates to the original upstream Chronos2Model.
 """
 
@@ -11,11 +11,14 @@ from __future__ import annotations
 import logging
 import math
 import warnings
-from typing import Any, List, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def _select_quantiles(
@@ -36,20 +39,22 @@ def _select_quantiles(
     # (B, Q, H) -> (B, H, Q)
     preds_bhq = preds.permute(0, 2, 1)
 
-    if set(requested_quantiles).issubset(training_quantiles):
-        indices = [training_quantiles.index(q) for q in requested_quantiles]
-        return preds_bhq[..., indices]
+    quantile_to_index = {q: idx for idx, q in enumerate(training_quantiles)}
+    direct_indices = [quantile_to_index.get(q) for q in requested_quantiles]
+    if all(idx is not None for idx in direct_indices):
+        return preds_bhq[..., [int(idx) for idx in direct_indices]]
 
-    tq = torch.tensor(training_quantiles, dtype=torch.float32)
+    tq = preds_bhq.new_tensor(training_quantiles, dtype=torch.float32)
     results = []
-    for ql in requested_quantiles:
-        if ql in training_quantiles:
-            results.append(preds_bhq[..., training_quantiles.index(ql)])
-        else:
-            idx = torch.searchsorted(tq, ql).clamp(1, len(tq) - 1).item()
-            lo, hi = idx - 1, idx
-            frac = (ql - tq[lo].item()) / max(tq[hi].item() - tq[lo].item(), 1e-9)
-            results.append(preds_bhq[..., lo] * (1 - frac) + preds_bhq[..., hi] * frac)
+    for ql, direct_idx in zip(requested_quantiles, direct_indices):
+        if direct_idx is not None:
+            results.append(preds_bhq[..., direct_idx])
+            continue
+        q_tensor = tq.new_tensor(ql)
+        idx = torch.searchsorted(tq, q_tensor).clamp(1, len(tq) - 1).item()
+        lo, hi = idx - 1, idx
+        frac = (ql - tq[lo].item()) / max(tq[hi].item() - tq[lo].item(), 1e-9)
+        results.append(preds_bhq[..., lo] * (1 - frac) + preds_bhq[..., hi] * frac)
     return torch.stack(results, dim=-1)
 
 
@@ -72,6 +77,7 @@ def _load_model_cute(
 ):
     """Load via CuteChronos2Model (no upstream dependency for inference)."""
     from pathlib import Path
+
     from cutechronos.model import CuteChronos2Model
 
     if Path(model_path).is_dir():

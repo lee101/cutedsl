@@ -17,6 +17,8 @@ from latentteleport.config import (
     AblationConfig, CombinerConfig, EvalConfig, TeleportConfig, TokenizerConfig,
 )
 from latentteleport.evaluate import compute_pairwise_metrics
+from latentteleport.judge import create_judge
+from latentteleport.refine import TeleportPipeline
 from latentteleport.tokenizer import VisualUnit, create_tokenizer
 
 log = logging.getLogger(__name__)
@@ -28,6 +30,10 @@ def run_single_config(
     prompts: list[str],
     config: dict,
     output_base: str,
+    judge_enabled: bool = False,
+    negative_prompt: str = "",
+    guidance_scale: float = 0.0,
+    negative_trajectory_scale: float = 0.0,
 ) -> dict:
     """Run teleportation for one ablation config and measure quality."""
     from latentteleport.dataset import capture_intermediates
@@ -41,7 +47,18 @@ def run_single_config(
 
     tokenizer = create_tokenizer(tok_cfg)
     combiner = create_combiner(comb_cfg)
-    target_step = int(20 * config["teleport_timestep"])
+    tp_cfg = TeleportConfig(
+        num_steps=20,
+        height=512,
+        width=512,
+        device="cuda",
+        guidance_scale=guidance_scale,
+        negative_prompt=negative_prompt,
+        negative_trajectory_scale=negative_trajectory_scale,
+        trajectory_virtual_steps=config.get("trajectory_virtual_steps", 0),
+    )
+    teleport = TeleportPipeline(pipe, cache, tokenizer, combiner, tp_cfg, comb_cfg)
+    judge = create_judge(judge_enabled)
 
     run_id = (
         f"tok_{config['tokenizer']}_comb_{config['combiner']}"
@@ -56,50 +73,34 @@ def run_single_config(
     latencies = []
     cache_hits = 0
     cache_misses = 0
+    judge_scores = []
 
     for idx, prompt in enumerate(prompts):
         t0 = time.time()
-        units = tokenizer.tokenize(prompt)
-
-        latents = []
-        embeddings = []
-        for u in units:
-            lat = cache.load_latent(u, target_step)
-            emb = cache.load_text_embedding(u)
-            if lat is not None:
-                latents.append(lat)
-                cache_hits += 1
-                if emb is not None:
-                    embeddings.append(emb)
-            else:
-                cache_misses += 1
-
-        if not latents:
-            # Full generation fallback
-            result, _ = capture_intermediates(
-                pipe, prompt, 512, 512, 20, 42, "cuda",
-            )
-            if result.images:
-                result.images[0].save(str(gen_dir / f"{idx:04d}.png"))
-        else:
-            if hasattr(combiner, "combine_tree"):
-                combined = combiner.combine_tree(latents, embeddings or None)
-            elif len(latents) >= 2:
-                combined = latents[0]
-                for i in range(1, len(latents)):
-                    ea = embeddings[i - 1] if embeddings else None
-                    eb = embeddings[i] if embeddings else None
-                    combined = combiner.combine(combined, latents[i], ea, eb)
-            else:
-                combined = latents[0]
-            # TODO: wire refinement steps through pipeline
+        outcome = teleport.generate(prompt, negative_prompt=negative_prompt)
+        cache_hits += int(outcome.get("cache_hits", 0))
+        cache_misses += max(outcome.get("total_units", 0) - outcome.get("cache_hits", 0), 0)
+        image = outcome.get("image")
+        if image is not None:
+            image.save(str(gen_dir / f"{idx:04d}.png"))
 
         latencies.append(time.time() - t0)
 
         # Also generate baseline reference
         result_ref, _ = capture_intermediates(pipe, prompt, 512, 512, 20, 42, "cuda")
         if result_ref.images:
-            result_ref.images[0].save(str(ref_dir / f"{idx:04d}.png"))
+            ref_image = result_ref.images[0]
+            ref_image.save(str(ref_dir / f"{idx:04d}.png"))
+            if judge is not None and image is not None:
+                judge_result = judge.score_pair(prompt, image, ref_image)
+                if judge_result.combined_score is not None:
+                    judge_scores.append(
+                        {
+                            "prompt_score": judge_result.prompt_score,
+                            "reference_score": judge_result.reference_score,
+                            "combined_score": judge_result.combined_score,
+                        }
+                    )
 
     metrics = compute_pairwise_metrics(str(gen_dir), str(ref_dir))
     import numpy as np
@@ -109,7 +110,14 @@ def run_single_config(
         "cache_hit_rate": cache_hits / max(cache_hits + cache_misses, 1),
         "mean_latency_s": float(np.mean(latencies)) if latencies else 0,
         "run_id": run_id,
+        "negative_prompt": negative_prompt,
+        "guidance_scale": guidance_scale,
+        "negative_trajectory_scale": negative_trajectory_scale,
     }
+    if judge_scores:
+        result["judge_mean_prompt_score"] = float(np.mean([s["prompt_score"] for s in judge_scores]))
+        result["judge_mean_reference_score"] = float(np.mean([s["reference_score"] for s in judge_scores]))
+        result["judge_mean_combined_score"] = float(np.mean([s["combined_score"] for s in judge_scores]))
     (run_dir / "config.json").write_text(json.dumps(result, indent=2))
     return result
 
@@ -130,12 +138,14 @@ def run_ablation(
         ablation.refinement_steps_list,
         ablation.teleport_timesteps,
     ):
-        configs.append({
-            "tokenizer": tok,
-            "combiner": comb,
-            "refinement_steps": ref_steps,
-            "teleport_timestep": tt,
-        })
+        for tvs in ablation.trajectory_virtual_steps:
+            configs.append({
+                "tokenizer": tok,
+                "combiner": comb,
+                "refinement_steps": ref_steps,
+                "teleport_timestep": tt,
+                "trajectory_virtual_steps": tvs,
+            })
 
     log.info(f"Ablation: {len(configs)} configs x {len(prompts)} prompts")
 
@@ -167,6 +177,10 @@ def main():
     parser.add_argument("--num-prompts", type=int, default=10)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-offload", action="store_true")
+    parser.add_argument("--judge", action="store_true", help="Enable CLIP-based local prompt/reference judging")
+    parser.add_argument("--negative-prompt", default="")
+    parser.add_argument("--guidance-scale", type=float, default=0.0)
+    parser.add_argument("--negative-trajectory-scale", type=float, default=0.0)
     args = parser.parse_args()
 
     from latentteleport.dataset import DEFAULT_PROMPTS
@@ -182,7 +196,47 @@ def main():
 
     cache = LatentCache(args.cache_dir, resolution=(args.height, args.width))
     ablation = AblationConfig()
-    run_ablation(pipe, cache, prompts, ablation, args.output_dir)
+    results = []
+    configs = []
+    for tok, comb, ref_steps, tt in itertools.product(
+        ablation.tokenizer_strategies,
+        ablation.combiner_methods,
+        ablation.refinement_steps_list,
+        ablation.teleport_timesteps,
+    ):
+        for tvs in ablation.trajectory_virtual_steps:
+            configs.append({
+                "tokenizer": tok,
+                "combiner": comb,
+                "refinement_steps": ref_steps,
+                "teleport_timestep": tt,
+                "trajectory_virtual_steps": tvs,
+            })
+    log.info(f"Ablation: {len(configs)} configs x {len(prompts)} prompts")
+    for i, cfg in enumerate(configs):
+        log.info(f"[{i+1}/{len(configs)}] {cfg}")
+        try:
+            results.append(
+                run_single_config(
+                    pipe,
+                    cache,
+                    prompts,
+                    cfg,
+                    args.output_dir,
+                    judge_enabled=args.judge,
+                    negative_prompt=args.negative_prompt,
+                    guidance_scale=args.guidance_scale,
+                    negative_trajectory_scale=args.negative_trajectory_scale,
+                )
+            )
+        except Exception as e:
+            log.error(f"Failed: {e}")
+            results.append({**cfg, "error": str(e)})
+    out_path = Path(args.output_dir) / "ablation_results.jsonl"
+    with out_path.open("w") as f:
+        for r in results:
+            f.write(json.dumps(r) + "\n")
+    log.info(f"Ablation results: {out_path}")
 
 
 if __name__ == "__main__":

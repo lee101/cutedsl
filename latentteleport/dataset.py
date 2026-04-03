@@ -153,6 +153,46 @@ def populate_cache(
         log.info(f"[{idx+1}/{total}] cached '{unit.text}' ({len(intermediates)} steps, {elapsed:.1f}s)")
 
 
+def cache_prompt_trajectory(
+    pipe,
+    cache: LatentCache,
+    prompt: str,
+    config: TeleportConfig,
+    tokenizer_config: TokenizerConfig | None = None,
+    include_bigrams: bool = True,
+) -> tuple[object, dict[int, torch.Tensor]]:
+    """Generate a full prompt once and use it to update online caches."""
+    tokenizer = create_tokenizer(tokenizer_config or TokenizerConfig())
+    result, intermediates = capture_intermediates(
+        pipe,
+        prompt,
+        config.height,
+        config.width,
+        config.num_steps,
+        config.seed,
+        config.device,
+        config.guidance_scale,
+    )
+    units = tokenizer.tokenize(prompt)
+    for unit in units:
+        text_emb = extract_text_embedding(pipe, unit.text)
+        cache.store_latents(
+            unit,
+            intermediates,
+            text_embedding=text_emb,
+            metadata={"prompt": prompt, "source": "online_update", "seed": config.seed},
+        )
+    if include_bigrams:
+        for i in range(len(units) - 1):
+            cache.store_bigram(
+                units[i],
+                units[i + 1],
+                intermediates,
+                metadata={"prompt": prompt, "source": "online_update", "seed": config.seed},
+            )
+    return result, intermediates
+
+
 def generate_pair_references(
     pipe,
     cache: LatentCache,

@@ -7,12 +7,15 @@ import time
 from typing import Any
 
 import torch
+from diffusers.pipelines.z_image.pipeline_z_image import calculate_shift, retrieve_timesteps
 
 from latentteleport.cache import LatentCache
 from latentteleport.combiner import LatentCombiner, TreeCombiner, slerp
 from latentteleport.confidence import ConfidenceConfig, ConfidenceGate
 from latentteleport.config import CombinerConfig, TeleportConfig
 from latentteleport.tokenizer import TokenizerStrategy, VisualUnit
+from latentteleport.trajectory import apply_knn_trajectory_prior
+from latentteleport.step_forecaster import LatentStepForecaster
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +24,7 @@ def refine_from_latent(
     pipe,
     latent: torch.Tensor,
     prompt: str,
+    negative_prompt: str | None,
     start_step: int,
     num_total_steps: int = 20,
     height: int = 512,
@@ -35,72 +39,79 @@ def refine_from_latent(
     denoising steps by starting from a pre-cached/combined latent.
     """
     scheduler = pipe.scheduler
+    latent = latent.to(device=device, dtype=torch.float32)
+    if latent.dim() == 3:
+        latent = latent.unsqueeze(0)
+    latents = latent
 
-    # Set up full timestep schedule
-    # ZImage uses flow matching with mu-based schedule
-    latent_image_ids = pipe._prepare_latent_image_ids(
-        1, height // (pipe.vae_scale_factor * 2),
-        width // (pipe.vae_scale_factor * 2),
-        device, pipe.transformer.dtype,
-    )
-
-    # Handle mu calculation for flow matching
-    mu = pipe._calculate_shift(
-        latent_image_ids,
-        scheduler.config.get("base_shift", 0.5),
-        scheduler.config.get("max_shift", 1.15),
-        scheduler.config.get("base_image_seq_len", 256),
-        scheduler.config.get("max_image_seq_len", 4096),
-    ) if hasattr(pipe, "_calculate_shift") else None
-
-    if mu is not None:
-        scheduler.set_timesteps(num_total_steps, device=device, mu=mu)
-    else:
-        scheduler.set_timesteps(num_total_steps, device=device)
-
-    # Slice timesteps: skip the first start_step steps
-    all_timesteps = scheduler.timesteps
-    remaining_timesteps = all_timesteps[start_step:]
-    num_remaining = len(remaining_timesteps)
-
-    if hasattr(scheduler, "set_begin_index"):
-        scheduler.set_begin_index(start_step)
-
-    # Encode prompt
-    prompt_embeds, pooled_prompt_embeds, text_ids = pipe.encode_prompt(
+    prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
         prompt=prompt,
-        prompt_2=None,
+        negative_prompt=negative_prompt,
+        do_classifier_free_guidance=guidance_scale > 0,
         device=device,
     )
 
-    # Ensure latent is on correct device/dtype
-    latent = latent.to(device=device, dtype=pipe.transformer.dtype)
-    if latent.dim() == 3:
-        latent = latent.unsqueeze(0)  # add batch dim
-
-    # Pack latent for transformer if needed
-    latents = pipe._pack_latents(latent, 1, latent.shape[1], latent.shape[2], latent.shape[3])
+    batch_size = latents.shape[0]
+    image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
+    mu = calculate_shift(
+        image_seq_len,
+        scheduler.config.get("base_image_seq_len", 256),
+        scheduler.config.get("max_image_seq_len", 4096),
+        scheduler.config.get("base_shift", 0.5),
+        scheduler.config.get("max_shift", 1.15),
+    )
+    scheduler.sigma_min = 0.0
+    timesteps, _ = retrieve_timesteps(
+        scheduler,
+        num_total_steps,
+        device,
+        sigmas=None,
+        mu=mu,
+    )
+    remaining_timesteps = timesteps[start_step:]
+    num_remaining = len(remaining_timesteps)
 
     log.info(f"Refining: {num_remaining} steps from step {start_step}/{num_total_steps}")
 
     # Run remaining denoising steps
     for i, t in enumerate(remaining_timesteps):
-        timestep = t.expand(latents.shape[0]).to(latents.dtype)
+        timestep = t.expand(batch_size)
+        timestep = (1000 - timestep) / 1000
+        apply_cfg = guidance_scale > 0 and bool(negative_prompt_embeds)
+        if apply_cfg:
+            latent_model_input = latents.to(pipe.transformer.dtype).repeat(2, 1, 1, 1)
+            prompt_embeds_model_input = prompt_embeds + negative_prompt_embeds
+            timestep_model_input = timestep.repeat(2)
+        else:
+            latent_model_input = latents.to(pipe.transformer.dtype)
+            prompt_embeds_model_input = prompt_embeds
+            timestep_model_input = timestep
 
-        noise_pred = pipe.transformer(
-            hidden_states=latents,
-            timestep=timestep / 1000,
-            encoder_hidden_states=prompt_embeds,
-            pooled_projections=pooled_prompt_embeds,
-            txt_ids=text_ids,
-            img_ids=latent_image_ids,
+        latent_model_input = latent_model_input.unsqueeze(2)
+        latent_model_input_list = list(latent_model_input.unbind(dim=0))
+        model_out_list = pipe.transformer(
+            latent_model_input_list,
+            timestep_model_input,
+            prompt_embeds_model_input,
             return_dict=False,
         )[0]
 
-        latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+        if apply_cfg:
+            pos_out = model_out_list[:batch_size]
+            neg_out = model_out_list[batch_size:]
+            noise_pred = []
+            for j in range(batch_size):
+                pos = pos_out[j].float()
+                neg = neg_out[j].float()
+                noise_pred.append(pos + guidance_scale * (pos - neg))
+            noise_pred = torch.stack(noise_pred, dim=0)
+        else:
+            noise_pred = torch.stack([item.float() for item in model_out_list], dim=0)
 
-    # Unpack and decode
-    latents = pipe._unpack_latents(latents, height, width, pipe.vae_scale_factor)
+        noise_pred = noise_pred.squeeze(2)
+        noise_pred = -noise_pred
+        latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+
     latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
     image = pipe.vae.decode(latents, return_dict=False)[0]
     image = pipe.image_processor.postprocess(image, output_type="pil")[0]
@@ -112,6 +123,7 @@ def refine_from_latent_simple(
     pipe,
     latent: torch.Tensor,
     prompt: str,
+    negative_prompt: str | None = None,
     strength: float = 0.7,
     num_total_steps: int = 20,
     height: int = 512,
@@ -131,8 +143,37 @@ def refine_from_latent_simple(
 
     return refine_from_latent(
         pipe, latent, prompt, start_step, num_steps,
-        height, width, guidance_scale, seed, device,
+        negative_prompt, height, width, guidance_scale, seed, device,
     )
+
+
+def _pooled_condition_embedding(
+    pipe,
+    cache: LatentCache,
+    tokenizer: TokenizerStrategy,
+    text: str | None,
+    device: str,
+) -> torch.Tensor | None:
+    if not text:
+        return None
+    units = tokenizer.tokenize(text)
+    cached = []
+    for unit in units:
+        emb = cache.load_text_embedding(unit)
+        if emb is not None:
+            cached.append(emb.float())
+    if cached:
+        return torch.stack(cached, dim=0).mean(dim=0)
+    prompt_embeds, _negative = pipe.encode_prompt(
+        prompt=text,
+        negative_prompt=None,
+        do_classifier_free_guidance=False,
+        device=device,
+    )
+    if not prompt_embeds:
+        return None
+    pooled = [emb.float().mean(dim=0) for emb in prompt_embeds]
+    return torch.stack(pooled, dim=0).mean(dim=0)
 
 
 class TeleportPipeline:
@@ -147,6 +188,7 @@ class TeleportPipeline:
         config: TeleportConfig,
         combiner_config: CombinerConfig,
         confidence_gate: ConfidenceGate | None = None,
+        step_forecaster: LatentStepForecaster | None = None,
     ):
         self.pipe = pipe
         self.cache = cache
@@ -156,10 +198,12 @@ class TeleportPipeline:
         self.comb_config = combiner_config
         self._start_step = int(config.num_steps * combiner_config.teleport_timestep)
         self.confidence_gate = confidence_gate or ConfidenceGate()
+        self.step_forecaster = step_forecaster
 
-    def generate(self, prompt: str, seed: int | None = None) -> dict:
+    def generate(self, prompt: str, seed: int | None = None, negative_prompt: str | None = None) -> dict:
         """Generate an image via latent teleportation."""
         seed = seed or self.config.seed
+        negative_prompt = self.config.negative_prompt if negative_prompt is None else negative_prompt
         t0 = time.time()
 
         # 1. Tokenize into visual units
@@ -201,11 +245,20 @@ class TeleportPipeline:
         t1 = time.time()
         if not latents:
             log.info(f"Full cache miss for '{prompt}', falling back to full gen")
-            from latentteleport.dataset import capture_intermediates
-            result, _ = capture_intermediates(
-                self.pipe, prompt, self.config.height, self.config.width,
-                self.config.num_steps, seed, self.config.device, self.config.guidance_scale,
-            )
+            from latentteleport.dataset import cache_prompt_trajectory, capture_intermediates
+            if self.config.online_cache_updates:
+                result, _ = cache_prompt_trajectory(
+                    self.pipe,
+                    self.cache,
+                    prompt,
+                    self.config,
+                    include_bigrams=self.config.online_store_bigrams,
+                )
+            else:
+                result, _ = capture_intermediates(
+                    self.pipe, prompt, self.config.height, self.config.width,
+                    self.config.num_steps, seed, self.config.device, self.config.guidance_scale,
+                )
             return {
                 "image": result.images[0] if result.images else None,
                 "method": "full_generation",
@@ -225,6 +278,46 @@ class TeleportPipeline:
         else:
             combined = latents[0]
 
+        trajectory_stats = {}
+        positive_anchor = _pooled_condition_embedding(
+            self.pipe, self.cache, self.tokenizer, prompt, self.config.device,
+        )
+        negative_anchor = _pooled_condition_embedding(
+            self.pipe, self.cache, self.tokenizer, negative_prompt, self.config.device,
+        )
+        repel_embeddings = [negative_anchor] if negative_anchor is not None else []
+        if positive_anchor is not None:
+            embeddings_for_guidance = [positive_anchor]
+        else:
+            embeddings_for_guidance = embeddings
+        if embeddings and self.config.trajectory_virtual_steps > 0:
+            if self.step_forecaster is not None:
+                pooled_emb = (positive_anchor if positive_anchor is not None else torch.stack(embeddings).mean(dim=0)).clone()
+                if negative_anchor is not None and self.config.negative_trajectory_scale > 0:
+                    pooled_emb = pooled_emb - self.config.negative_trajectory_scale * negative_anchor
+                pooled_emb = pooled_emb.unsqueeze(0).to(combined.device, combined.dtype)
+                latent_in = combined.unsqueeze(0) if combined.dim() == 4 else combined
+                timestep = torch.tensor([float(self._start_step)], device=combined.device, dtype=combined.dtype)
+                with torch.no_grad():
+                    combined = self.step_forecaster(latent_in.float(), timestep.float(), pooled_emb.float()).squeeze(0).to(combined.dtype)
+                trajectory_stats = {
+                    "mode": "learned_forecaster",
+                    "virtual_steps_applied": 1,
+                    "negative_prompt_used": bool(negative_prompt),
+                }
+            else:
+                combined, trajectory_stats = apply_knn_trajectory_prior(
+                    self.cache,
+                    combined,
+                    embeddings_for_guidance,
+                    repel_embeddings,
+                    self._start_step,
+                    top_k=self.config.trajectory_top_k,
+                    scale=self.config.trajectory_scale,
+                    repel_scale=self.config.negative_trajectory_scale,
+                    virtual_steps=self.config.trajectory_virtual_steps,
+                )
+
         combine_time = time.time() - t1
 
         # 4. Confidence-gated adaptive refinement
@@ -243,17 +336,26 @@ class TeleportPipeline:
 
         try:
             image = refine_from_latent(
-                self.pipe, combined, prompt, adaptive_start,
+                self.pipe, combined, prompt, negative_prompt, adaptive_start,
                 self.config.num_steps, self.config.height, self.config.width,
                 self.config.guidance_scale, seed, self.config.device,
             )
         except Exception as e:
             log.warning(f"Refinement failed: {e}, falling back to full gen")
-            from latentteleport.dataset import capture_intermediates
-            result, _ = capture_intermediates(
-                self.pipe, prompt, self.config.height, self.config.width,
-                self.config.num_steps, seed, self.config.device, self.config.guidance_scale,
-            )
+            from latentteleport.dataset import cache_prompt_trajectory, capture_intermediates
+            if self.config.online_cache_updates:
+                result, _ = cache_prompt_trajectory(
+                    self.pipe,
+                    self.cache,
+                    prompt,
+                    self.config,
+                    include_bigrams=self.config.online_store_bigrams,
+                )
+            else:
+                result, _ = capture_intermediates(
+                    self.pipe, prompt, self.config.height, self.config.width,
+                    self.config.num_steps, seed, self.config.device, self.config.guidance_scale,
+                )
             image = result.images[0] if result.images else None
 
         refine_time = time.time() - t2
@@ -273,4 +375,6 @@ class TeleportPipeline:
             "refine_time_s": refine_time,
             "units": [u.text for u in units],
             "confidence_stats": self.confidence_gate.get_stats(),
+            "trajectory_stats": trajectory_stats,
+            "negative_prompt_used": bool(negative_prompt),
         }

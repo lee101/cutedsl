@@ -135,6 +135,26 @@ class TestTransformerBlock:
             out2 = block(x.clone())
         assert torch.equal(out1, out2)
 
+    def test_fused_qkv_matches_unfused(self, monkeypatch):
+        block = CuteZImageTransformerBlock(
+            layer_id=0, dim=256, n_heads=4, n_kv_heads=4, modulation=True,
+        ).eval()
+        x = torch.randn(2, 16, 256)
+        adaln = torch.randn(2, min(256, ADALN_EMBED_DIM))
+        freqs_real = torch.randn(1, 16, 32)
+        freqs_imag = torch.randn(1, 16, 32)
+        freqs_cis = torch.complex(freqs_real, freqs_imag)
+
+        monkeypatch.setenv("CUTEZIMAGE_FUSED_QKV", "0")
+        with torch.no_grad():
+            baseline = block(x, freqs_cis=freqs_cis, adaln_input=adaln)
+
+        monkeypatch.setenv("CUTEZIMAGE_FUSED_QKV", "1")
+        with torch.no_grad():
+            fused = block(x, freqs_cis=freqs_cis, adaln_input=adaln)
+
+        assert torch.equal(baseline, fused)
+
 
 class TestFinalLayer:
     def test_output_shape(self):
