@@ -1,8 +1,9 @@
-"""Train a Z-Image ControlNet on line-conditioned style-transfer pairs."""
+"""Train a Z-Image ControlNet on conditioned style-transfer pairs."""
 
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 from pathlib import Path
 
@@ -21,8 +22,68 @@ from zimagecontrol.runtime import (
 )
 
 
+def _precompute_latents(pipe, dataset, device, dtype):
+    """Encode all images/prompts on GPU, then return CPU tensors so we can free VAE/text_encoder."""
+    pipe.vae.to(device=device, dtype=dtype)
+    pipe.text_encoder.to(device=device)
+    freeze_module(pipe.vae)
+    freeze_module(pipe.text_encoder)
+
+    cached = []
+    for idx in range(len(dataset)):
+        item = dataset[idx]
+        pv = item["pixel_values"].unsqueeze(0).to(device=device, dtype=dtype)
+        cv = item["control_values"].unsqueeze(0).to(device=device, dtype=dtype)
+        with torch.no_grad():
+            latents = encode_vae_image(pipe.vae, pv, sample_mode="sample").cpu()
+            control_latents = encode_vae_image(pipe.vae, cv, sample_mode="argmax").cpu()
+            prompt_embeds, _ = pipe.encode_prompt(
+                prompt=[item["prompt"]],
+                device=device,
+                do_classifier_free_guidance=False,
+                max_sequence_length=512,
+            )
+            if isinstance(prompt_embeds, list):
+                prompt_embeds = torch.cat(prompt_embeds, dim=0)
+            prompt_embeds = prompt_embeds.cpu()
+        cached.append({
+            "latents": latents.squeeze(0),
+            "control_latents": control_latents.squeeze(0),
+            "prompt_embeds": prompt_embeds.squeeze(0),
+        })
+        if (idx + 1) % 10 == 0:
+            print(f"pre-encoded {idx + 1}/{len(dataset)}")
+
+    pipe.vae.to("cpu")
+    pipe.text_encoder.to("cpu")
+    del pipe.vae, pipe.text_encoder
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"pre-encoded {len(cached)} samples, freed VAE+text_encoder")
+    return cached
+
+
+class CachedLatentDataset(torch.utils.data.Dataset):
+    def __init__(self, cached):
+        self.cached = cached
+
+    def __len__(self):
+        return len(self.cached)
+
+    def __getitem__(self, idx):
+        return self.cached[idx]
+
+
+def _collate_cached(examples):
+    return {
+        "latents": torch.stack([e["latents"] for e in examples]),
+        "control_latents": torch.stack([e["control_latents"] for e in examples]),
+        "prompt_embeds": torch.stack([e["prompt_embeds"] for e in examples]),
+    }
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train a Z-Image ControlNet for line-based style transfer")
+    parser = argparse.ArgumentParser(description="Train a Z-Image ControlNet")
     parser.add_argument("--model-id", default="Tongyi-MAI/Z-Image-Turbo")
     parser.add_argument("--metadata-path", required=True)
     parser.add_argument("--output-dir", default="zimagecontrol/checkpoints/default")
@@ -41,9 +102,10 @@ def main() -> None:
     parser.add_argument("--control-refiner-layers", default="all")
     parser.add_argument("--add-control-noise-refiner", default=None)
     parser.add_argument("--sparse-control-prob", type=float, default=0.7)
+    parser.add_argument("--conditioning-type", default="line", choices=["line", "canny"])
     parser.add_argument("--control-mode", default="sparse_or_full", choices=["full", "sparse", "sparse_or_full"])
     parser.add_argument("--conditioning-scale", type=float, default=1.0)
-    parser.add_argument("--cpu-offload", action="store_true")
+    parser.add_argument("--gradient-checkpointing", action="store_true")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -54,48 +116,22 @@ def main() -> None:
     from diffusers import ZImagePipeline
 
     pipe = ZImagePipeline.from_pretrained(args.model_id, torch_dtype=dtype)
-    if args.cpu_offload:
-        pipe.enable_model_cpu_offload()
-        raise ValueError("CPU offload is not supported for training; use a CUDA device instead.")
 
-    pipe.vae.to(device=device, dtype=dtype)
-    pipe.text_encoder.to(device=device)
-    pipe.transformer.to(device=device, dtype=dtype)
-    freeze_module(pipe.vae)
-    freeze_module(pipe.text_encoder)
-    freeze_module(pipe.transformer)
-
-    controlnet = build_zimage_controlnet(
-        pipe.transformer,
-        control_layers_spec=args.control_layers,
-        control_refiner_layers_spec=args.control_refiner_layers,
-        add_control_noise_refiner=args.add_control_noise_refiner,
-    )
-    controlnet.to(device=device, dtype=dtype)
-    controlnet.train()
-    trainable_params = list(iter_trainable_controlnet_parameters(controlnet))
-    if not trainable_params:
-        raise ValueError("No trainable ControlNet parameters selected.")
-
-    optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay)
-    dataset = ZImageControlDataset(
+    # pre-encode dataset on GPU then free VAE+text_encoder
+    image_dataset = ZImageControlDataset(
         args.metadata_path,
+        conditioning_type=args.conditioning_type,
         control_mode=args.control_mode,
         sparse_control_prob=args.sparse_control_prob,
         regenerate_sparse=True,
     )
-    loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_controlnet_examples,
-    )
+    cached = _precompute_latents(pipe, image_dataset, device, dtype)
 
-    image_height = dataset.records[0].height
-    image_width = dataset.records[0].width
+    # compute scheduler params from image dimensions
+    image_height = image_dataset.records[0].height
+    image_width = image_dataset.records[0].width
     if image_height is None or image_width is None:
-        sample = dataset[0]["pixel_values"]
+        sample = image_dataset[0]["pixel_values"]
         image_height, image_width = int(sample.shape[-2]), int(sample.shape[-1])
     image_seq_len = (image_height // 2) * (image_width // 2)
     mu = calculate_shift(
@@ -108,9 +144,43 @@ def main() -> None:
     pipe.scheduler.sigma_min = 0.0
     pipe.scheduler.set_timesteps(pipe.scheduler.config.num_train_timesteps, device=device, mu=mu)
     train_timesteps = pipe.scheduler.timesteps[:-1]
-
     patch_size = pipe.transformer.config.all_patch_size[0]
     f_patch_size = pipe.transformer.config.all_f_patch_size[0]
+
+    # now move transformer to GPU and build controlnet
+    pipe.transformer.to(device=device, dtype=dtype)
+    freeze_module(pipe.transformer)
+    if args.gradient_checkpointing and hasattr(pipe.transformer, 'enable_gradient_checkpointing'):
+        try:
+            pipe.transformer.enable_gradient_checkpointing()
+        except (ValueError, AttributeError):
+            print("gradient checkpointing not supported by transformer, skipping")
+
+    controlnet = build_zimage_controlnet(
+        pipe.transformer,
+        control_layers_spec=args.control_layers,
+        control_refiner_layers_spec=args.control_refiner_layers,
+        add_control_noise_refiner=args.add_control_noise_refiner,
+    )
+    controlnet.to(device=device, dtype=dtype)
+    controlnet.gradient_checkpointing = False
+    controlnet.train()
+
+    trainable_params = list(iter_trainable_controlnet_parameters(controlnet))
+    if not trainable_params:
+        raise ValueError("No trainable ControlNet parameters selected.")
+    print(f"trainable params: {sum(p.numel() for p in trainable_params):,}")
+
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay)
+    loader = DataLoader(
+        CachedLatentDataset(cached),
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,
+        collate_fn=_collate_cached,
+    )
+
+    control_in_dim = controlnet.config.control_in_dim
     scaler_enabled = device.type == "cuda" and dtype in {torch.float16, torch.bfloat16}
     autocast_dtype = dtype if scaler_enabled else torch.float32
 
@@ -122,21 +192,17 @@ def main() -> None:
             if global_step >= args.max_train_steps:
                 break
 
-            prompts = batch["prompts"]
-            pixel_values = batch["pixel_values"].to(device=device, dtype=dtype)
-            control_values = batch["control_values"].to(device=device, dtype=dtype)
+            latents = batch["latents"].to(device=device, dtype=dtype)
+            control_latents = batch["control_latents"].to(device=device, dtype=dtype)
+            prompt_embeds = batch["prompt_embeds"].to(device=device, dtype=dtype)
 
             with torch.no_grad():
-                latents = encode_vae_image(pipe.vae, pixel_values, sample_mode="sample")
-                control_latents = encode_vae_image(pipe.vae, control_values, sample_mode="argmax")
-                if control_latents.shape[1] != controlnet.config.control_in_dim:
-                    pad_channels = controlnet.config.control_in_dim - control_latents.shape[1]
+                if control_latents.shape[1] != control_in_dim:
+                    pad_channels = control_in_dim - control_latents.shape[1]
                     zeros = torch.zeros(
-                        control_latents.shape[0],
-                        pad_channels,
+                        control_latents.shape[0], pad_channels,
                         *control_latents.shape[2:],
-                        device=control_latents.device,
-                        dtype=control_latents.dtype,
+                        device=device, dtype=dtype,
                     )
                     control_latents = torch.cat([control_latents, zeros], dim=1)
 
@@ -145,12 +211,6 @@ def main() -> None:
                 timesteps = train_timesteps[timestep_indices]
                 noised_latents = pipe.scheduler.scale_noise(latents.float(), timesteps, noise.float()).to(dtype)
                 target = (noise - latents.float()).to(torch.float32)
-                prompt_embeds, _ = pipe.encode_prompt(
-                    prompt=prompts,
-                    device=device,
-                    do_classifier_free_guidance=False,
-                    max_sequence_length=512,
-                )
 
             timestep_input = ((1000.0 - timesteps.float()) / 1000.0).to(device=device)
             latent_list = list(noised_latents.unsqueeze(2).unbind(dim=0))
@@ -200,18 +260,12 @@ def main() -> None:
             break
 
     controlnet.save_pretrained(output_dir / "final")
-    print(
-        json.dumps(
-            {
-                "output_dir": str(output_dir),
-                "final_checkpoint": str(output_dir / "final"),
-                "steps": global_step,
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps({
+        "output_dir": str(output_dir),
+        "final_checkpoint": str(output_dir / "final"),
+        "steps": global_step,
+    }, indent=2))
 
 
 if __name__ == "__main__":
     main()
-

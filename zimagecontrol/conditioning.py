@@ -62,6 +62,36 @@ def extract_line_art(
     return Image.fromarray(rgb, mode="RGB")
 
 
+def extract_canny(
+    image: Image.Image,
+    *,
+    low_threshold: int = 100,
+    high_threshold: int = 200,
+    blur_ksize: int = 5,
+    invert: bool = True,
+) -> Image.Image:
+    """Convert an RGB image into a Canny edge map as an RGB control image."""
+    import cv2
+
+    arr = np.asarray(ImageOps.exif_transpose(image).convert("RGB"))
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    if blur_ksize > 0:
+        gray = cv2.GaussianBlur(gray, (blur_ksize, blur_ksize), 0)
+    edges = cv2.Canny(gray, low_threshold, high_threshold)
+    if invert:
+        edges = 255 - edges
+    rgb = np.repeat(edges[:, :, None], 3, axis=2)
+    return Image.fromarray(rgb, mode="RGB")
+
+
+@dataclass(frozen=True)
+class CannyExtractionConfig:
+    low_threshold: int = 100
+    high_threshold: int = 200
+    blur_ksize: int = 5
+    invert: bool = True
+
+
 def drop_line_patches(
     image: Image.Image,
     *,
@@ -111,8 +141,10 @@ def save_conditioning_triplet(
     sparse_patch_size: int,
     sparse_drop_prob: float,
     sparse_seed: int,
+    canny_path: Path | None = None,
+    canny_config: CannyExtractionConfig | None = None,
 ) -> dict[str, str]:
-    """Write target, dense-line, and sparse-line images and return manifest paths."""
+    """Write target, conditioning images and return manifest paths."""
     target_path.parent.mkdir(parents=True, exist_ok=True)
     line_path.parent.mkdir(parents=True, exist_ok=True)
     sparse_line_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,9 +165,24 @@ def save_conditioning_triplet(
     target_image.save(target_path)
     line_image.save(line_path)
     sparse_line.save(sparse_line_path)
-    return {
+    result = {
         "target_image_path": str(target_path),
         "line_image_path": str(line_path),
         "sparse_line_image_path": str(sparse_line_path),
     }
+
+    if canny_path is not None:
+        canny_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg = canny_config or CannyExtractionConfig()
+        canny_image = extract_canny(
+            target_image,
+            low_threshold=cfg.low_threshold,
+            high_threshold=cfg.high_threshold,
+            blur_ksize=cfg.blur_ksize,
+            invert=cfg.invert,
+        )
+        canny_image.save(canny_path)
+        result["canny_image_path"] = str(canny_path)
+
+    return result
 

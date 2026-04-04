@@ -31,6 +31,7 @@ zimage = [
     "diffusers>=0.36.0",
     "transformers>=4.38.0",
     "accelerate>=1.0.0",
+    "opencv-python-headless>=4.8.0",
 ]
 teleport = [
     "torchvision>=0.23.0,<0.24.0",

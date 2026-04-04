@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from zimagecontrol.conditioning import LineExtractionConfig, save_conditioning_triplet
+from zimagecontrol.conditioning import CannyExtractionConfig, LineExtractionConfig, save_conditioning_triplet
 from zimagecontrol.runtime import parse_dtype
 
 
@@ -90,6 +90,10 @@ def main() -> None:
     parser.add_argument("--line-strength", type=float, default=1.0)
     parser.add_argument("--sparse-patch-size", type=int, default=32)
     parser.add_argument("--sparse-drop-prob", type=float, default=0.18)
+    parser.add_argument("--conditioning-type", default="all", choices=["line", "canny", "all"])
+    parser.add_argument("--canny-low", type=int, default=100)
+    parser.add_argument("--canny-high", type=int, default=200)
+    parser.add_argument("--canny-blur-ksize", type=int, default=5)
     parser.add_argument("--cpu-offload", action="store_true")
     args = parser.parse_args()
 
@@ -109,6 +113,7 @@ def main() -> None:
     target_dir = output_dir / "target"
     line_dir = output_dir / "line"
     sparse_dir = output_dir / "line_sparse"
+    canny_dir = output_dir / "canny"
     metadata_path = output_dir / "metadata.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -126,6 +131,12 @@ def main() -> None:
         edge_percentile=args.edge_percentile,
         line_strength=args.line_strength,
     )
+    canny_config = CannyExtractionConfig(
+        low_threshold=args.canny_low,
+        high_threshold=args.canny_high,
+        blur_ksize=args.canny_blur_ksize,
+    )
+    use_canny = args.conditioning_type in ("canny", "all")
 
     records: list[dict[str, object]] = []
     total = len(pairs) * len(seeds)
@@ -153,6 +164,8 @@ def main() -> None:
                 sparse_patch_size=args.sparse_patch_size,
                 sparse_drop_prob=args.sparse_drop_prob,
                 sparse_seed=seed,
+                canny_path=(canny_dir / f"{stem}.png") if use_canny else None,
+                canny_config=canny_config if use_canny else None,
             )
             record = {
                 "index": item_index,

@@ -21,6 +21,7 @@ class ControlNetRecord:
     target_image_path: str
     line_image_path: str
     sparse_line_image_path: str | None = None
+    canny_image_path: str | None = None
     content_prompt: str | None = None
     style_prompt: str | None = None
     width: int | None = None
@@ -40,6 +41,7 @@ def load_records(metadata_path: str | Path) -> list[ControlNetRecord]:
             "target_image_path",
             "line_image_path",
             "sparse_line_image_path",
+            "canny_image_path",
             "content_prompt",
             "style_prompt",
             "width",
@@ -53,6 +55,7 @@ def load_records(metadata_path: str | Path) -> list[ControlNetRecord]:
                 target_image_path=payload["target_image_path"],
                 line_image_path=payload["line_image_path"],
                 sparse_line_image_path=payload.get("sparse_line_image_path"),
+                canny_image_path=payload.get("canny_image_path"),
                 content_prompt=payload.get("content_prompt"),
                 style_prompt=payload.get("style_prompt"),
                 width=payload.get("width"),
@@ -84,6 +87,7 @@ class ZImageControlDataset(Dataset):
         self,
         metadata_path: str | Path,
         *,
+        conditioning_type: str = "line",
         control_mode: str = "sparse_or_full",
         sparse_control_prob: float = 0.7,
         regenerate_sparse: bool = False,
@@ -91,6 +95,7 @@ class ZImageControlDataset(Dataset):
         regenerate_drop_prob: float = 0.18,
     ):
         self.records = load_records(metadata_path)
+        self.conditioning_type = conditioning_type
         self.control_mode = control_mode
         self.sparse_control_prob = sparse_control_prob
         self.regenerate_sparse = regenerate_sparse
@@ -101,6 +106,12 @@ class ZImageControlDataset(Dataset):
         return len(self.records)
 
     def _choose_control_image(self, record: ControlNetRecord) -> Image.Image:
+        if self.conditioning_type == "canny":
+            if record.canny_image_path and Path(record.canny_image_path).exists():
+                return Image.open(record.canny_image_path).convert("RGB")
+            from zimagecontrol.conditioning import extract_canny
+            return extract_canny(Image.open(record.target_image_path).convert("RGB"))
+
         use_sparse = self.control_mode == "sparse" or (
             self.control_mode == "sparse_or_full"
             and record.sparse_line_image_path is not None

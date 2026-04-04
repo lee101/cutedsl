@@ -42,6 +42,9 @@ sync_repo() {
     --exclude '.pytest_cache/' \
     --exclude '.mypy_cache/' \
     --exclude '.ruff_cache/' \
+    --exclude 'generated_dataset/' \
+    --exclude 'checkpoints/' \
+    --exclude 'remote_results/' \
     "${REPO_ROOT}/" "${REMOTE}:${DAISY_REMOTE_REPO}/"
 }
 
@@ -55,8 +58,10 @@ bootstrap() {
     set -euo pipefail
     mkdir -p '${DAISY_HF_HOME}' '${DAISY_UV_CACHE}'
     cd '${DAISY_REMOTE_REPO}'
-    '${DAISY_PYTHON}' -m pip install --user uv >/tmp/cutedsl_daisy_uv_install.log 2>&1 || (cat /tmp/cutedsl_daisy_uv_install.log && exit 1)
     export PATH=\"\$HOME/.local/bin:\$PATH\"
+    if ! command -v uv &>/dev/null; then
+      '${DAISY_PYTHON}' -m pip install --user --break-system-packages uv >/tmp/cutedsl_daisy_uv_install.log 2>&1 || (cat /tmp/cutedsl_daisy_uv_install.log && exit 1)
+    fi
     export UV_CACHE_DIR='${DAISY_UV_CACHE}'
     export HF_HOME='${DAISY_HF_HOME}'
     uv sync --python '${DAISY_PYTHON}' ${extra_args[*]}
@@ -114,6 +119,74 @@ generate_dataset() {
   "
 }
 
+generate_controlnet_dataset() {
+  if [[ $# -eq 0 ]]; then
+    set -- \
+      --model-id "${MODEL_ID_DEFAULT}" \
+      --transformer diffusers \
+      --device cuda \
+      --dtype bfloat16 \
+      --width 512 \
+      --height 512 \
+      --steps 9 \
+      --num-contents 10 \
+      --num-styles 8 \
+      --num-seeds 2 \
+      --conditioning-type all \
+      --output-dir zimagecontrol/generated_dataset/default
+  fi
+
+  local args=()
+  local arg
+  for arg in "$@"; do
+    args+=("$(printf '%q' "${arg}")")
+  done
+
+  run_remote "
+    set -euo pipefail
+    cd '${DAISY_REMOTE_REPO}'
+    export HF_HOME='${DAISY_HF_HOME}'
+    export PATH=\"\$HOME/.local/bin:\$PATH\"
+    . .venv/bin/activate
+    python -m zimagecontrol.generate_dataset ${args[*]}
+  "
+}
+
+train_controlnet() {
+  if [[ $# -eq 0 ]]; then
+    set -- \
+      --model-id "${MODEL_ID_DEFAULT}" \
+      --metadata-path zimagecontrol/generated_dataset/default/metadata.jsonl \
+      --output-dir zimagecontrol/checkpoints/canny_default \
+      --device cuda \
+      --dtype bfloat16 \
+      --conditioning-type canny \
+      --control-mode full \
+      --control-layers 0,29 \
+      --control-refiner-layers 0 \
+      --batch-size 1 \
+      --max-train-steps 1000 \
+      --learning-rate 1e-4 \
+      --save-every 250 \
+      --gradient-checkpointing
+  fi
+
+  local args=()
+  local arg
+  for arg in "$@"; do
+    args+=("$(printf '%q' "${arg}")")
+  done
+
+  run_remote "
+    set -euo pipefail
+    cd '${DAISY_REMOTE_REPO}'
+    export HF_HOME='${DAISY_HF_HOME}'
+    export PATH=\"\$HOME/.local/bin:\$PATH\"
+    . .venv/bin/activate
+    python -m zimagecontrol.train ${args[*]}
+  "
+}
+
 pull_results() {
   local remote_path="${1:-${DAISY_REMOTE_REPO}/zimageaccelerated/remote_results/}"
   local local_path="${2:-${REPO_ROOT}/zimageaccelerated/remote_results/daisy/}"
@@ -143,6 +216,8 @@ Usage:
   scripts/daisy_zimage.sh status
   scripts/daisy_zimage.sh smoke [accelerated|cute|diffusers]
   scripts/daisy_zimage.sh generate [zimageaccelerated.generate_dataset args...]
+  scripts/daisy_zimage.sh generate-controlnet [zimagecontrol.generate_dataset args...]
+  scripts/daisy_zimage.sh train-controlnet [zimagecontrol.train args...]
   scripts/daisy_zimage.sh pull [remote_path] [local_path]
 
 Environment:
@@ -162,6 +237,8 @@ main() {
     status) status ;;
     smoke) smoke "$@" ;;
     generate) generate_dataset "$@" ;;
+    generate-controlnet) generate_controlnet_dataset "$@" ;;
+    train-controlnet) train_controlnet "$@" ;;
     pull) pull_results "$@" ;;
     ""|-h|--help|help) usage ;;
     *)
