@@ -203,6 +203,17 @@ def _get_fused_qk_norm():
     return None
 
 
+def _get_fused_qk_norm_rope():
+    """Get the fully fused QK norm + RoPE kernel (single launch)."""
+    if _use_triton():
+        try:
+            from cutezimage.triton_kernels.fused_qkv_norm_rope import fused_qk_norm_rope
+            return fused_qk_norm_rope
+        except ImportError:
+            pass
+    return None
+
+
 def _fused_qkv_enabled() -> bool:
     setting = os.environ.get("CUTEZIMAGE_FUSED_QKV", "1").strip().lower()
     return setting not in {"0", "false", "no", "off"}
@@ -382,14 +393,22 @@ class CuteZImageTransformerBlock(nn.Module):
         v = v.unflatten(-1, (self.n_kv_heads, self.head_dim))
 
         if self.qk_norm:
-            _fqk = _get_fused_qk_norm() if q.is_cuda and self.n_kv_heads == self.n_heads else None
-            if _fqk is not None:
-                q, k = _fqk(q, k, self.q_norm.weight, self.k_norm.weight, eps=1e-5)
+            # Try fully fused QK norm + RoPE (single kernel launch)
+            _fqk_rope = _get_fused_qk_norm_rope() if (
+                q.is_cuda and self.n_kv_heads == self.n_heads and freqs_cis is not None
+            ) else None
+            if _fqk_rope is not None:
+                q, k = _fqk_rope(q, k, self.q_norm.weight, self.k_norm.weight, freqs_cis, eps=1e-5)
+                freqs_cis = None  # Already applied
             else:
-                q = self.q_norm(q)
-                k = self.k_norm(k)
+                _fqk = _get_fused_qk_norm() if q.is_cuda and self.n_kv_heads == self.n_heads else None
+                if _fqk is not None:
+                    q, k = _fqk(q, k, self.q_norm.weight, self.k_norm.weight, eps=1e-5)
+                else:
+                    q = self.q_norm(q)
+                    k = self.k_norm(k)
 
-        # Apply RoPE
+        # Apply RoPE (skipped if already applied by fused kernel above)
         if freqs_cis is not None:
             rope_fn = _get_rope_complex() if q.is_cuda else _apply_rope_complex_fallback
             if self.use_fused_qkv and _fused_qkv_enabled():
@@ -554,9 +573,14 @@ class CuteZImageTransformer(nn.Module):
     Can load weights from a HuggingFace Z-Image checkpoint.
     """
 
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
     def __init__(self, config: CuteZImageConfig):
         super().__init__()
         self.config = config
+        self.in_channels = config.in_channels
 
         # Patch embedding
         patch_dim = config.f_patch_size * config.patch_size * config.patch_size * config.in_channels
@@ -817,7 +841,7 @@ class CuteZImageTransformer(nn.Module):
         x: list[torch.Tensor],
         t: torch.Tensor,
         cap_feats: list[torch.Tensor],
-        return_dict: bool = True,
+        return_dict: bool = False,
         controlnet_block_samples: dict[int, torch.Tensor] | None = None,
         patch_size: int | None = None,
         f_patch_size: int | None = None,
@@ -1030,3 +1054,44 @@ class CuteZImageTransformer(nn.Module):
             except Exception as exc:
                 print(f"[cutezimage] torch.compile failed ({exc}); using eager mode.")
         return cute
+
+    @classmethod
+    def from_diffusers_accelerated(
+        cls,
+        model: "ZImageTransformer2DModel",
+    ) -> "CuteZImageTransformer":
+        """Create an AcceleratedZImageTransformer with fused QKV projections.
+
+        Uses AcceleratedZImageTransformerBlock which fuses Q, K, V projections
+        into a single linear layer, reducing kernel launches from 3 to 1 per
+        attention layer across all 30 transformer blocks.
+
+        Args:
+            model: diffusers ZImageTransformer2DModel instance.
+
+        Returns:
+            AcceleratedZImageTransformer with fused QKV weights.
+        """
+        from zimageaccelerated.model import AcceleratedZImageTransformer
+        return AcceleratedZImageTransformer.from_diffusers(model)
+
+    @classmethod
+    def from_diffusers_accelerated_compiled(
+        cls,
+        model: "ZImageTransformer2DModel",
+        compile_mode: str = "reduce-overhead",
+    ) -> "CuteZImageTransformer":
+        """Create a compiled AcceleratedZImageTransformer with fused QKV.
+
+        Combines fused QKV projections with torch.compile for maximum throughput.
+        This is the recommended factory for production inference.
+
+        Args:
+            model: diffusers ZImageTransformer2DModel instance.
+            compile_mode: torch.compile mode.
+
+        Returns:
+            Compiled AcceleratedZImageTransformer.
+        """
+        from zimageaccelerated.model import AcceleratedZImageTransformer
+        return AcceleratedZImageTransformer.from_diffusers_compiled(model, compile_mode)

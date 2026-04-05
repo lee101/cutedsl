@@ -89,7 +89,7 @@ def fused_silu_gate(x1: torch.Tensor, x3: torch.Tensor) -> torch.Tensor:
     out = torch.empty_like(x1_2d)
 
     BLOCK_M = 64
-    BLOCK_N = min(1024, triton.next_power_of_2(N))
+    BLOCK_N = min(256, triton.next_power_of_2(N))
 
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N),)
 
