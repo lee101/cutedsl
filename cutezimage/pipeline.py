@@ -134,10 +134,15 @@ def build_cute_transformer(
     compile_mode: str | None = ZIMAGE_COMPILE_MODE,
     device: str | torch.device | None = None,
     torch_dtype: torch.dtype | None = None,
+    use_accelerated: bool = True,
 ) -> CuteZImageTransformer:
     """Convert a diffusers transformer into ``CuteZImageTransformer``.
 
     If the transformer is already accelerated, it is returned unchanged.
+
+    When *use_accelerated* is True (default), the transformer is built with
+    fused QKV projections via ``AcceleratedZImageTransformer``, which reduces
+    kernel launches from 3 to 1 per attention layer.
     """
     if isinstance(transformer, CuteZImageTransformer):
         return transformer
@@ -146,7 +151,12 @@ def build_cute_transformer(
     target_device = torch.device(device) if device is not None else source_device
     target_dtype = torch_dtype if torch_dtype is not None else source_dtype
 
-    if compile_mode:
+    if use_accelerated:
+        if compile_mode:
+            cute = CuteZImageTransformer.from_diffusers_accelerated_compiled(transformer, compile_mode=compile_mode)
+        else:
+            cute = CuteZImageTransformer.from_diffusers_accelerated(transformer)
+    elif compile_mode:
         cute = CuteZImageTransformer.from_diffusers_compiled(transformer, compile_mode=compile_mode)
     else:
         cute = CuteZImageTransformer.from_diffusers(transformer)
