@@ -115,7 +115,38 @@ class CLIPClusteredTokenizer:
 
     def tokenize(self, prompt: str) -> list[VisualUnit]:
         chunks = self._nlp_fallback.tokenize(prompt)
-        return chunks  # TODO: map chunks to nearest centroid labels
+        if self._centroids is None or len(self._centroids) == 0:
+            return chunks
+        # Map each chunk to its nearest centroid's representative label
+        mapped: list[VisualUnit] = []
+        for chunk in chunks:
+            emb = self._embed_text(chunk.text)
+            if emb is not None:
+                # Cosine similarity against all centroids
+                emb_norm = emb / (np.linalg.norm(emb) + 1e-8)
+                cent_norms = self._centroids / (
+                    np.linalg.norm(self._centroids, axis=1, keepdims=True) + 1e-8
+                )
+                sims = cent_norms @ emb_norm
+                best_idx = int(np.argmax(sims))
+                # Use the representative label from the nearest centroid
+                label = self._labels.get(str(best_idx), chunk.text)
+                mapped.append(VisualUnit.from_text(label))
+            else:
+                mapped.append(chunk)
+        return mapped
+
+    def _embed_text(self, text: str) -> np.ndarray | None:
+        """Embed text using a lightweight sentence model, or return None."""
+        if not hasattr(self, "_embed_model"):
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+            except ImportError:
+                self._embed_model = None
+        if self._embed_model is None:
+            return None
+        return self._embed_model.encode(text, convert_to_numpy=True)
 
     def build_centroids(
         self, prompts: list[str], n_clusters: int, clip_model, output_dir: str

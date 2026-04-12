@@ -1083,6 +1083,43 @@ class CuteChronos2Model(nn.Module):
         model = _apply_torch_compile(model, compile_mode=compile_mode)
         return model
 
+    @classmethod
+    def from_pretrained_compiled_tq(
+        cls,
+        model_path: str | Path,
+        compile_mode: str = "reduce-overhead",
+        adapter_path: str | Path | None = None,
+        tq_bits: int = 4,
+        tq_key_mode: str = "prod",
+        tq_value_mode: str = "mse",
+    ) -> "CuteChronos2Model":
+        """Load a compiled CuteChronos2Model with TurboQuant KV quantization.
+
+        TurboQuant quantizers are attached **before** torch.compile so the
+        encode/decode ops are visible to the compiler and can be captured in
+        CUDA graphs (with graph breaks as needed).
+
+        Args:
+            model_path: path to model directory.
+            compile_mode: torch.compile mode.
+            adapter_path: optional LoRA adapter path.
+            tq_bits: quantization bit-width (default 4).
+            tq_key_mode: quantization mode for keys ("mse" or "prod").
+            tq_value_mode: quantization mode for values ("mse" or "prod").
+
+        Returns:
+            Compiled model with TurboQuant enabled, in eval mode.
+        """
+        model = cls.from_pretrained(model_path, adapter_path=adapter_path)
+        # Attach quantizers first so torch.compile can see them
+        model.enable_turboquant_kv(
+            bits=tq_bits,
+            key_mode=tq_key_mode,
+            value_mode=tq_value_mode,
+        )
+        model = _apply_torch_compile(model, compile_mode=compile_mode)
+        return model
+
     @torch.inference_mode()
     def predict(
         self,

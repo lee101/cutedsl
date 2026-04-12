@@ -165,9 +165,27 @@ def evaluate_teleportation(
             else:
                 combined = latents[0]
 
-            # TODO: inject combined latent at timestep and run remaining steps
-            # For now, save the combined latent decoded through VAE
-            result_tp = None  # placeholder until refinement pipeline is wired
+            # Inject combined latent at the teleport timestep and refine
+            from latentteleport.refine import refine_from_latent
+
+            result_tp_image = refine_from_latent(
+                pipe,
+                latent=combined,
+                prompt=prompt,
+                negative_prompt=None,
+                start_step=step_idx,
+                num_total_steps=teleport_config.num_steps,
+                height=teleport_config.height,
+                width=teleport_config.width,
+                guidance_scale=getattr(teleport_config, "guidance_scale", 0.0),
+                seed=teleport_config.seed,
+                device=teleport_config.device,
+            )
+            # Wrap in a namespace so result_tp.images[0] works like pipeline output
+            class _Result:
+                def __init__(self, img):
+                    self.images = [img] if img is not None else []
+            result_tp = _Result(result_tp_image)
 
         latencies_teleport.append(time.time() - t0)
         if result_tp and result_tp.images:

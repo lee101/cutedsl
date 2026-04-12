@@ -74,8 +74,14 @@ def _load_model_cute(
     device: str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
     compile_mode: str | None = None,
+    turboquant_bits: int | None = None,
 ):
-    """Load via CuteChronos2Model (no upstream dependency for inference)."""
+    """Load via CuteChronos2Model (no upstream dependency for inference).
+
+    When *turboquant_bits* is set (e.g. 4), TurboQuant KV quantization is
+    enabled.  Quantizers are attached **before** torch.compile so the
+    encode/decode ops are captured in CUDA graphs.
+    """
     from pathlib import Path
 
     from cutechronos.model import CuteChronos2Model
@@ -89,10 +95,18 @@ def _load_model_cute(
             allow_patterns=["*.json", "*.safetensors", "*.bin"],
         )
 
-    if compile_mode:
+    if turboquant_bits and compile_mode:
+        model = CuteChronos2Model.from_pretrained_compiled_tq(
+            local_path,
+            compile_mode=compile_mode,
+            tq_bits=turboquant_bits,
+        )
+    elif compile_mode:
         model = CuteChronos2Model.from_pretrained_compiled(local_path, compile_mode=compile_mode)
     else:
         model = CuteChronos2Model.from_pretrained(local_path)
+        if turboquant_bits:
+            model.enable_turboquant_kv(bits=turboquant_bits)
 
     model = model.to(device=device, dtype=dtype)
     model.eval()
@@ -190,6 +204,7 @@ class CuteChronos2Pipeline:
         dtype: torch.dtype = torch.bfloat16,
         use_cute: bool = True,
         compile_mode: str | None = None,
+        turboquant_bits: int | None = None,
     ) -> "CuteChronos2Pipeline":
         """Load a Chronos-2 model and wrap it in a CuteChronos2Pipeline.
 
@@ -207,9 +222,17 @@ class CuteChronos2Pipeline:
         compile_mode
             If set (e.g. ``"reduce-overhead"``), apply torch.compile to the
             CuteChronos2Model. Only effective when ``use_cute=True``.
+        turboquant_bits
+            If set (e.g. 4), enable TurboQuant KV quantization at the given
+            bit-width. Quantizers are attached before torch.compile so
+            encode/decode ops can be captured in CUDA graphs. Only effective
+            when ``use_cute=True``.
         """
         if use_cute:
-            model = _load_model_cute(model_path, device=device, dtype=dtype, compile_mode=compile_mode)
+            model = _load_model_cute(
+                model_path, device=device, dtype=dtype,
+                compile_mode=compile_mode, turboquant_bits=turboquant_bits,
+            )
             return cls(model, device=device, _is_cute=True)
         else:
             model = _load_model_original(model_path, device=device, dtype=dtype)
