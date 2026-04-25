@@ -204,8 +204,10 @@ def _fallback_preprocess(
         valid_mask = torch.cat([pad_mask, valid_mask], dim=1)
 
     num_patches = L_padded // patch_size
-    patched = normalized.unfold(1, patch_size, patch_size)  # (B, P, ps)
-    patched_mask = valid_mask.unfold(1, patch_size, patch_size)
+    normalized = normalized.contiguous()
+    valid_mask = valid_mask.contiguous()
+    patched = normalized.reshape(B, num_patches, patch_size)
+    patched_mask = valid_mask.reshape(B, num_patches, patch_size)
     patched = torch.where(patched_mask > 0, patched, torch.zeros_like(patched))
 
     attn_mask = (patched_mask.sum(dim=-1) > 0).float()

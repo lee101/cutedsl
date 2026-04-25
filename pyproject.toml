@@ -57,6 +57,7 @@ dev = [
 [project.scripts]
 cutedsl-convert = "cutechronos.convert:main"
 cutedsl-benchmark = "cutechronos.benchmark:main"
+cutedsl-chronos-export-tensorrt = "cutechronos.export_tensorrt:main"
 cutedsl-parakeet-benchmark = "cuteparakeet.benchmark:main"
 cutedsl-parakeet-export-onnx = "cuteparakeet.export_onnx:main"
 cutedsl-zimage-benchmark = "cutezimage.benchmark:main"

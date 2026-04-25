@@ -221,6 +221,31 @@ python -m cuteparakeet.export_onnx \
     --simplify
 ```
 
+CuteChronos2 also has a TensorRT probe/export path. It exports the model
+through the pure PyTorch fallback kernels, writes a JSON report with
+`torch._dynamo` and ONNX details, and optionally builds a TensorRT engine
+when `tensorrt` is installed on the target host:
+
+```bash
+python -m cutechronos.export_tensorrt \
+    --model-path amazon/chronos-2 \
+    --output-dir /tmp/cutechronos_trt \
+    --batch-size 8 \
+    --context-length 512 \
+    --max-batch-size 16 \
+    --max-context-length 1024 \
+    --build-engine \
+    --fp16
+```
+
+To turn the JSON report into a short Markdown brief:
+
+```bash
+python /home/lee/code/dotfiles/trt_export_markdown.py \
+    /tmp/cutechronos_trt/report.json \
+    --output /tmp/cutechronos_trt/report.md
+```
+
 ### Cross-Language Wrapper Examples
 
 There is also a wrapper benchmark under [`examples/chronos_wrappers/`](/home/lee/code/cutedsl/examples/chronos_wrappers) that drives the same `CuteChronos2` inference path from:

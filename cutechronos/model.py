@@ -96,6 +96,15 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def _export_safe_asinh(x: torch.Tensor) -> torch.Tensor:
+    return torch.log(x + torch.sqrt(x.square() + 1.0))
+
+
+def _export_safe_sinh(x: torch.Tensor) -> torch.Tensor:
+    exp_x = torch.exp(x)
+    return 0.5 * (exp_x - torch.reciprocal(exp_x))
+
+
 def compute_cos_sin_fallback(
     inv_freq: torch.Tensor,
     position_ids: torch.Tensor,
@@ -365,6 +374,7 @@ class InstanceNorm(nn.Module):
         super().__init__()
         self.eps = eps
         self.use_arcsinh = use_arcsinh
+        self.export_safe_arcsinh = False
 
     def forward(
         self,
@@ -381,7 +391,10 @@ class InstanceNorm(nn.Module):
             loc, scale = loc_scale
         scaled_x = (x - loc) / scale
         if self.use_arcsinh:
-            scaled_x = torch.arcsinh(scaled_x)
+            if self.export_safe_arcsinh:
+                scaled_x = _export_safe_asinh(scaled_x)
+            else:
+                scaled_x = torch.arcsinh(scaled_x)
         return scaled_x.to(orig_dtype), (loc, scale)
 
     def inverse(self, x: torch.Tensor, loc_scale: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
@@ -389,7 +402,10 @@ class InstanceNorm(nn.Module):
         x = x.to(torch.float32)
         loc, scale = loc_scale
         if self.use_arcsinh:
-            x = torch.sinh(x)
+            if self.export_safe_arcsinh:
+                x = _export_safe_sinh(x)
+            else:
+                x = torch.sinh(x)
         x = x * scale + loc
         return x.to(orig_dtype)
 
@@ -469,6 +485,7 @@ class CuteChronos2Model(nn.Module):
         self.register_buffer("_cached_position_ids", torch.empty(0, dtype=torch.long), persistent=False)
         self._cached_seq_length: int = -1
         self._tubroquant_config: dict[str, Any] | None = None
+        self._use_fallback_preprocess = False
 
     def _prepare_patched_context(
         self,
@@ -477,7 +494,6 @@ class CuteChronos2Model(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """Normalize, patch, and prepare context with time encodings."""
         dtype = self._param_dtype()
-
         if context_mask is not None:
             context_mask = context_mask.to(context.dtype)
         else:
@@ -488,8 +504,42 @@ class CuteChronos2Model(nn.Module):
             context = context[..., -self.config.context_length:]
             context_mask = context_mask[..., -self.config.context_length:]
 
-        # Instance normalization (in float32)
-        context, loc_scale = self.instance_norm(context)
+        if self._use_fallback_preprocess:
+            from cutechronos.kernels import _fallback_preprocess
+
+            masked_context = torch.where(
+                context_mask.to(device=context.device, dtype=torch.bool),
+                context,
+                torch.full_like(context, float("nan")),
+            )
+            use_fallback_arcsinh = self.config.use_arcsinh and not self.instance_norm.export_safe_arcsinh
+            patched_context, attention_mask, loc, scale = _fallback_preprocess(
+                masked_context,
+                patch_size=self.config.input_patch_size,
+                context_length=self.config.context_length,
+                use_arcsinh=use_fallback_arcsinh,
+            )
+            if self.config.use_arcsinh and self.instance_norm.export_safe_arcsinh:
+                ps = self.config.input_patch_size
+                normalized_slice = patched_context[..., ps : 2 * ps]
+                patched_context = torch.cat(
+                    [
+                        patched_context[..., :ps],
+                        _export_safe_asinh(normalized_slice),
+                        patched_context[..., 2 * ps :],
+                    ],
+                    dim=-1,
+                )
+            return patched_context.to(dtype), attention_mask.to(dtype), (loc, scale)
+
+        # Instance normalization (in float32). When an explicit mask is passed,
+        # treat masked positions as missing values for the normalization stats.
+        masked_context = torch.where(
+            context_mask > 0,
+            context,
+            torch.full_like(context, float("nan")),
+        )
+        context, loc_scale = self.instance_norm(masked_context)
         context = context.to(dtype)
         context_mask = context_mask.to(dtype)
 
@@ -589,10 +639,7 @@ class CuteChronos2Model(nn.Module):
 
     def _get_position_ids_batched(self, seq_length: int, batch_size: int) -> torch.Tensor:
         """Position IDs expanded to batch size for Triton RoPE kernel."""
-        pos = self._get_position_ids(seq_length)
-        if batch_size > 1:
-            pos = pos.expand(batch_size, -1)
-        return pos
+        return self._get_position_ids(seq_length).expand(batch_size, -1)
 
     def offload_to_cpu(self):
         """Move model to CPU and free GPU memory."""
