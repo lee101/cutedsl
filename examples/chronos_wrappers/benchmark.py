@@ -103,10 +103,10 @@ forecast = None
 for _ in range({args.runs}):
     sync()
     t0 = time.perf_counter()
-    _, mean = pipe.predict_quantiles([context], prediction_length={args.prediction_length})
+    quantiles, _ = pipe.predict_quantiles([context], prediction_length={args.prediction_length}, quantile_levels=[0.5])
     sync()
     latencies.append((time.perf_counter() - t0) * 1000.0)
-    forecast = mean[0][0].tolist()
+    forecast = quantiles[0][0, :, 0].tolist()
 
 valid = [
     abs(f - a)
@@ -206,6 +206,23 @@ def print_case_summary(case_result: dict[str, object]) -> None:
             f"{fmt(result['mae']):>12} "
             f"{fmt(result.get('mape_pct')):>12}"
         )
+    c_forecast = case_result["c"]["forecast"]
+    go_forecast = case_result["go"]["forecast"]
+    py_forecast = case_result["python_wrapper"]["forecast"]
+    orig_forecast = case_result["python_original"]["forecast"]
+    wrapper_max_delta = max(
+        abs(float(a) - float(b))
+        for a, b in zip(c_forecast, go_forecast)
+    )
+    wrapper_max_delta = max(
+        wrapper_max_delta,
+        max(abs(float(a) - float(b)) for a, b in zip(c_forecast, py_forecast)),
+    )
+    upstream_max_delta = max(abs(float(a) - float(b)) for a, b in zip(c_forecast, orig_forecast))
+    case_result["wrapper_max_abs_delta"] = wrapper_max_delta
+    case_result["upstream_max_abs_delta"] = upstream_max_delta
+    print(f"{'Wrapper max |delta|':<18} {wrapper_max_delta:>12.6f}")
+    print(f"{'Upstream max |delta|':<18} {upstream_max_delta:>12.6f}")
 
 
 def main() -> None:

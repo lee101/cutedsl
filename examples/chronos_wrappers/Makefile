@@ -35,7 +35,10 @@ $(C_RUNNER): $(BUILD_DIR) c/main.c $(LIB_PATH) include/cutechronos_bridge.h
 	gcc -O2 -Wall -Wextra -I$(INCLUDE_DIR) c/main.c -o $@ $(LDFLAGS_BIN)
 
 $(GO_RUNNER): $(LIB_PATH) go/main.go go/go.mod include/cutechronos_bridge.h
-	cd go && CGO_ENABLED=1 go build -o ../build/chronos_go_runner .
+	cd go && CGO_ENABLED=1 \
+		CC=gcc \
+		CGO_LDFLAGS="-L$(BUILD_DIR) -lcutechronos_bridge -L$(PY_LIBDIR) -lpython$(PY_LDVERSION) -Wl,-rpath,$(BUILD_DIR) -Wl,-rpath,$(PY_LIBDIR)" \
+		go build -o ../build/chronos_go_runner .
 
 clean:
 	rm -rf $(BUILD_DIR)

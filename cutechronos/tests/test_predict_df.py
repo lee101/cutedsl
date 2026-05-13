@@ -144,6 +144,80 @@ class TestPredictDf:
         assert "sid" in result.columns
         assert set(result["sid"]) == {"a", "b"}
 
+    def test_future_covariates_output_matches_chronos2_shape(self, pipe):
+        np.random.seed(42)
+        prediction_length = 16
+        history_ts = pd.date_range("2024-01-01", periods=64, freq="h")
+        future_ts = pd.date_range(history_ts[-1], periods=prediction_length + 1, freq="h")[1:]
+        df = pd.DataFrame(
+            {
+                "id": ["DE"] * 64,
+                "timestamp": history_ts,
+                "target": np.random.randn(64).cumsum(),
+                "load": np.random.randn(64),
+                "holiday": np.array(["no", "yes"] * 32),
+            }
+        )
+        future_df = pd.DataFrame(
+            {
+                "id": ["DE"] * prediction_length,
+                "timestamp": future_ts,
+                "load": np.random.randn(prediction_length),
+                "holiday": np.array(["no", "yes"] * 8),
+            }
+        )
+
+        result = pipe.predict_df(
+            df,
+            future_df=future_df,
+            id_column="id",
+            timestamp_column="timestamp",
+            target="target",
+            prediction_length=prediction_length,
+            quantile_levels=[0.1, 0.5, 0.9],
+        )
+
+        assert list(result.columns) == [
+            "id",
+            "timestamp",
+            "step",
+            "target_name",
+            "predictions",
+            "0.1",
+            "0.5",
+            "0.9",
+        ]
+        assert len(result) == prediction_length
+        assert result["timestamp"].tolist() == list(future_ts)
+        assert set(result["target_name"]) == {"target"}
+        assert not result[["predictions", "0.1", "0.5", "0.9"]].isna().any().any()
+
+    def test_multitarget_df_outputs_one_block_per_target(self, pipe):
+        np.random.seed(42)
+        df = pd.DataFrame(
+            {
+                "id": ["store_1"] * 64,
+                "timestamp": pd.date_range("2024-01-01", periods=64, freq="D"),
+                "sales": np.random.randn(64).cumsum() + 100,
+                "traffic": np.random.randn(64).cumsum() + 50,
+                "promo": np.random.randint(0, 2, size=64),
+            }
+        )
+
+        result = pipe.predict_df(
+            df,
+            id_column="id",
+            timestamp_column="timestamp",
+            target=["sales", "traffic"],
+            prediction_length=8,
+            quantile_levels=[0.5],
+        )
+
+        assert len(result) == 16
+        assert set(result["target_name"]) == {"sales", "traffic"}
+        assert result.groupby("target_name").size().to_dict() == {"sales": 8, "traffic": 8}
+        assert not result[["predictions", "0.5"]].isna().any().any()
+
 
 class TestModelGroupIds:
     def test_forward_accepts_group_ids(self):

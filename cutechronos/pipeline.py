@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import warnings
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, List, Optional, Union
 
 import torch
@@ -67,6 +68,107 @@ def _load_model_original(model_path: str, device: str = "cuda", dtype: torch.dty
     model = model.to(device)
     model.eval()
     return model
+
+
+def _to_1d_float_tensor(value: Any) -> torch.Tensor:
+    import numpy as np
+    if isinstance(value, torch.Tensor):
+        return value.to(torch.float32)
+    arr = np.asarray(value)
+    if not np.issubdtype(arr.dtype, np.number):
+        _, encoded = np.unique(arr.astype(str), return_inverse=True)
+        arr = encoded.astype("float32")
+    return torch.from_numpy(arr.astype("float32", copy=False))
+
+
+def _prepare_single_rich_task(task: Mapping[str, Any], idx: int, prediction_length: int):
+    import numpy as np
+    target = task.get("target")
+    if target is None:
+        raise ValueError(f"Element at index {idx} does not contain required key 'target'")
+    if isinstance(target, torch.Tensor):
+        target_t = target.to(torch.float32)
+    else:
+        target_t = torch.from_numpy(np.asarray(target).astype("float32", copy=False))
+    history_length = target_t.shape[-1]
+    target_t = target_t.reshape(-1, history_length)
+
+    past_covariates = task.get("past_covariates", {}) or {}
+    future_covariates = task.get("future_covariates", {}) or {}
+    cov_keys = sorted(past_covariates.keys())
+    future_keys = sorted(future_covariates.keys())
+    if not set(future_keys).issubset(cov_keys):
+        raise ValueError(f"future_covariates keys must be a subset of past_covariates keys in element {idx}")
+    ordered_keys = [k for k in cov_keys if k not in future_keys] + future_keys
+
+    past_rows = []
+    future_rows = [torch.full((prediction_length,), float("nan")) for _ in range(target_t.shape[0])]
+    for key in ordered_keys:
+        past = _to_1d_float_tensor(past_covariates[key])
+        if past.ndim != 1 or past.shape[0] != history_length:
+            raise ValueError(f"past_covariate {key!r} must be 1-D with length {history_length}")
+        past_rows.append(past)
+        if key in future_covariates:
+            fut = _to_1d_float_tensor(future_covariates[key])
+            if fut.ndim != 1 or fut.shape[0] != prediction_length:
+                raise ValueError(f"future_covariate {key!r} must be 1-D with length {prediction_length}")
+        else:
+            fut = torch.full((prediction_length,), float("nan"))
+        future_rows.append(fut)
+
+    context = torch.cat([target_t, torch.stack(past_rows) if past_rows else torch.zeros((0, history_length))], dim=0)
+    future = torch.stack(future_rows) if future_rows else torch.zeros((context.shape[0], prediction_length))
+    return context, future, target_t.shape[0]
+
+
+def _left_pad_and_cat_2d(tensors: list[torch.Tensor]) -> torch.Tensor:
+    max_len = max(t.shape[-1] for t in tensors)
+    padded = []
+    for tensor in tensors:
+        if tensor.shape[-1] < max_len:
+            pad = torch.full((tensor.shape[0], max_len - tensor.shape[-1]), float("nan"), dtype=tensor.dtype)
+            tensor = torch.cat([pad, tensor], dim=-1)
+        padded.append(tensor)
+    return torch.cat(padded, dim=0)
+
+
+def _convert_df_to_rich_inputs(df, future_df, id_column, timestamp_column, target_columns, prediction_length):
+    import pandas as pd
+    df = df.copy()
+    df[timestamp_column] = pd.to_datetime(df[timestamp_column])
+    df = df.sort_values([id_column, timestamp_column])
+    if future_df is not None:
+        future_df = future_df.copy()
+        future_df[timestamp_column] = pd.to_datetime(future_df[timestamp_column])
+        future_df = future_df.sort_values([id_column, timestamp_column])
+
+    original_order = df[id_column].drop_duplicates().to_numpy()
+    inputs = []
+    prediction_timestamps = {}
+    covariate_cols = [c for c in df.columns if c not in [id_column, timestamp_column, *target_columns]]
+
+    for series_id, group in df.groupby(id_column, sort=False):
+        group = group.sort_values(timestamp_column)
+        target_data = group[target_columns].to_numpy().T
+        task: dict[str, Any] = {"target": target_data}
+        if covariate_cols:
+            task["past_covariates"] = {col: group[col].to_numpy() for col in covariate_cols}
+        inferred = pd.infer_freq(group[timestamp_column])
+        if inferred is None:
+            inferred = "D"
+        last_timestamp = group[timestamp_column].iloc[-1]
+        prediction_timestamps[series_id] = pd.date_range(last_timestamp, periods=prediction_length + 1, freq=inferred)[1:]
+        if future_df is not None and covariate_cols:
+            fut_group = future_df[future_df[id_column] == series_id].sort_values(timestamp_column)
+            if len(fut_group) != prediction_length:
+                raise ValueError(
+                    f"Future covariates for series {series_id} must have length {prediction_length}, got {len(fut_group)}"
+                )
+            task["future_covariates"] = {
+                col: fut_group[col].to_numpy() for col in covariate_cols if col in fut_group.columns
+            }
+        inputs.append(task)
+    return inputs, original_order, prediction_timestamps
 
 
 def _load_model_cute(
@@ -344,16 +446,84 @@ class CuteChronos2Pipeline:
 
         raise ValueError(f"context must be 1-D, 2-D, or 3-D, got shape {tuple(tensor.shape)}")
 
+    def _predict_rich_inputs(
+        self,
+        inputs: Sequence[Mapping[str, Any]],
+        *,
+        prediction_length: int,
+        batch_size: int,
+        context_length: int | None = None,
+        cross_learning: bool = False,
+    ) -> List[torch.Tensor]:
+        if context_length is None:
+            context_length = self.model_context_length
+        context_length = min(context_length, self.model_context_length)
+        all_predictions: list[torch.Tensor] = []
+        num_output_patches = math.ceil(prediction_length / self.model_output_patch_size)
+        num_output_patches = min(num_output_patches, self.max_output_patches)
+        tasks = [_prepare_single_rich_task(task, idx, prediction_length) for idx, task in enumerate(inputs)]
+
+        task_idx = 0
+        while task_idx < len(tasks):
+            current_size = 0
+            selected = []
+            while task_idx < len(tasks) and (not selected or current_size < batch_size):
+                selected.append(tasks[task_idx])
+                current_size += tasks[task_idx][0].shape[0]
+                task_idx += 1
+
+            contexts = []
+            futures = []
+            group_ids = []
+            target_idx_ranges = []
+            start = 0
+            for group_id, (ctx_task, fut_task, n_targets) in enumerate(selected):
+                ctx_task = ctx_task[..., -context_length:]
+                contexts.append(ctx_task)
+                futures.append(fut_task)
+                group_ids.append(torch.full((ctx_task.shape[0],), group_id, dtype=torch.long))
+                target_idx_ranges.append((start, start + n_targets))
+                start += ctx_task.shape[0]
+
+            ctx = _left_pad_and_cat_2d(contexts).to(device=self._device, dtype=torch.float32)
+            gids = torch.cat(group_ids).to(device=self._device)
+            if cross_learning:
+                gids = torch.zeros_like(gids)
+            future_covariates = torch.cat(futures, dim=0).to(device=self._device, dtype=torch.float32)
+
+            if self._is_cute:
+                preds = self.model(
+                    ctx,
+                    num_output_patches=num_output_patches,
+                    group_ids=gids,
+                    future_covariates=future_covariates,
+                )
+            else:
+                output = self.model(
+                    context=ctx,
+                    group_ids=gids,
+                    num_output_patches=num_output_patches,
+                    future_covariates=future_covariates,
+                )
+                preds = output.quantile_preds
+            preds = preds[..., :prediction_length].to(dtype=torch.float32, device="cpu")
+            all_predictions.extend([preds[start:end] for start, end in target_idx_ranges])
+
+        return all_predictions
+
     # -- prediction ----------------------------------------------------------
 
     @torch.inference_mode()
     def predict(
         self,
-        context: Union[torch.Tensor, List[torch.Tensor]],
+        context: Union[torch.Tensor, List[torch.Tensor], Sequence[Mapping[str, Any]]] = None,
+        inputs: Union[torch.Tensor, List[torch.Tensor], Sequence[Mapping[str, Any]], None] = None,
         prediction_length: Optional[int] = None,
         limit_prediction_length: bool = True,
         cross_learning: bool = False,
         batch_size: Optional[int] = None,
+        context_length: int | None = None,
+        predict_batches_jointly: bool | None = None,
     ) -> List[torch.Tensor]:
         """Generate quantile predictions.
 
@@ -382,6 +552,12 @@ class CuteChronos2Pipeline:
 
         if prediction_length is None:
             prediction_length = self.model_prediction_length
+        if context is None:
+            context = inputs
+        if context is None:
+            raise ValueError("context or inputs must be provided")
+        if predict_batches_jointly is not None:
+            cross_learning = predict_batches_jointly
 
         if prediction_length > self.model_prediction_length:
             msg = (
@@ -393,6 +569,16 @@ class CuteChronos2Pipeline:
                 msg += " Set limit_prediction_length=False to allow this."
                 raise ValueError(msg)
             warnings.warn(msg)
+
+        if isinstance(context, Sequence) and not isinstance(context, (torch.Tensor, str, bytes)):
+            if all(isinstance(item, Mapping) for item in context):
+                return self._predict_rich_inputs(
+                    context,
+                    prediction_length=prediction_length,
+                    batch_size=batch_size or 256,
+                    context_length=context_length,
+                    cross_learning=cross_learning,
+                )
 
         ctx, group_ids, target_idx_ranges = self._prepare_context(context)
         total_batch = ctx.shape[0]
@@ -442,12 +628,15 @@ class CuteChronos2Pipeline:
     @torch.inference_mode()
     def predict_quantiles(
         self,
-        context: Union[torch.Tensor, List[torch.Tensor]],
+        context: Union[torch.Tensor, List[torch.Tensor], Sequence[Mapping[str, Any]], None] = None,
+        inputs: Union[torch.Tensor, List[torch.Tensor], Sequence[Mapping[str, Any]], None] = None,
         prediction_length: Optional[int] = None,
         quantile_levels: Optional[List[float]] = None,
         limit_prediction_length: bool = True,
         cross_learning: bool = False,
         batch_size: Optional[int] = None,
+        context_length: int | None = None,
+        predict_batches_jointly: bool | None = None,
     ) -> tuple[List[torch.Tensor], List[torch.Tensor]]:
         """Generate quantile and mean forecasts.
 
@@ -477,13 +666,20 @@ class CuteChronos2Pipeline:
         if quantile_levels is None:
             quantile_levels = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
-        predictions = self.predict(
-            context,
-            prediction_length=prediction_length,
-            limit_prediction_length=limit_prediction_length,
-            cross_learning=cross_learning,
-            batch_size=batch_size,
-        )
+        predict_kwargs = {
+            "prediction_length": prediction_length,
+            "limit_prediction_length": limit_prediction_length,
+            "cross_learning": cross_learning,
+            "batch_size": batch_size,
+        }
+        if inputs is not None:
+            predict_kwargs["inputs"] = inputs
+        if context_length is not None:
+            predict_kwargs["context_length"] = context_length
+        if predict_batches_jointly is not None:
+            predict_kwargs["predict_batches_jointly"] = predict_batches_jointly
+
+        predictions = self.predict(context, **predict_kwargs)
 
         training_quantile_levels = self.quantiles
 
@@ -502,7 +698,7 @@ class CuteChronos2Pipeline:
         future_df=None,
         id_column: str = "item_id",
         timestamp_column: str = "timestamp",
-        target: str = "target",
+        target: str | list[str] = "target",
         prediction_length: Optional[int] = None,
         quantile_levels: Optional[List[float]] = None,
         batch_size: int = 256,
@@ -543,47 +739,99 @@ class CuteChronos2Pipeline:
         except ImportError as exc:
             raise ImportError("pandas is required for predict_df") from exc
 
-        if future_df is not None:
-            raise NotImplementedError(
-                "future_df (future covariates) is not supported by CuteChronos2Pipeline. "
-                "Pass future_df=None or use the upstream Chronos2Pipeline."
-            )
-
         if prediction_length is None:
             prediction_length = self.model_prediction_length
         if quantile_levels is None:
             quantile_levels = list(self.quantiles)
+        target_columns = target if isinstance(target, list) else [target]
+
+        if future_df is not None or len(target_columns) > 1 or any(
+            col not in {id_column, timestamp_column, *target_columns} for col in df.columns
+        ):
+            inputs, original_order, prediction_timestamps = _convert_df_to_rich_inputs(
+                df=df,
+                future_df=future_df,
+                id_column=id_column,
+                timestamp_column=timestamp_column,
+                target_columns=target_columns,
+                prediction_length=prediction_length,
+            )
+            quantiles, mean = self.predict_quantiles(
+                inputs=inputs,
+                prediction_length=prediction_length,
+                quantile_levels=quantile_levels,
+                limit_prediction_length=False,
+                batch_size=batch_size,
+                predict_batches_jointly=cross_learning,
+                **kwargs,
+            )
+            quantiles_np = torch.stack(quantiles).numpy()
+            mean_np = torch.stack(mean).numpy()
+            result_dfs = []
+            for i, (series_id, future_ts) in enumerate(prediction_timestamps.items()):
+                for target_idx, target_col in enumerate(target_columns):
+                    data = {
+                        id_column: series_id,
+                        timestamp_column: future_ts,
+                        "step": range(prediction_length),
+                        "target_name": target_col,
+                        "predictions": mean_np[i, target_idx],
+                    }
+                    for q_idx, q_level in enumerate(quantile_levels):
+                        data[str(q_level)] = quantiles_np[i, target_idx, :, q_idx]
+                    result_dfs.append(pd.DataFrame(data))
+            predictions_df = pd.concat(result_dfs, ignore_index=True)
+            predictions_df.set_index(id_column, inplace=True)
+            predictions_df = predictions_df.loc[original_order]
+            predictions_df.reset_index(inplace=True)
+            return predictions_df
 
         groups = df.sort_values(timestamp_column).groupby(id_column, sort=False)
         item_ids = list(groups.groups.keys())
-        tensors = [torch.tensor(g[target].values, dtype=torch.float32) for _, g in groups]
+        tensors = [torch.tensor(g[target_columns[0]].values, dtype=torch.float32) for _, g in groups]
 
-        preds = self.predict(
-            tensors,
+        quantiles, mean = self.predict_quantiles(
+            inputs=tensors,
             prediction_length=prediction_length,
-            cross_learning=cross_learning,
+            quantile_levels=quantile_levels,
+            predict_batches_jointly=cross_learning,
             batch_size=batch_size,
             limit_prediction_length=False,
             **kwargs,
         )
+        result_dfs = []
+        for item_id, (_, group), q_pred, point_pred in zip(item_ids, groups, quantiles, mean):
+            ts = pd.to_datetime(group[timestamp_column])
+            inferred = pd.infer_freq(ts)
+            if inferred is None:
+                inferred = "D"
+            future_ts = pd.date_range(start=ts.iloc[-1], periods=prediction_length + 1, freq=inferred)[1:]
+            data = {
+                id_column: item_id,
+                timestamp_column: future_ts,
+                "step": range(prediction_length),
+                "target_name": target_columns[0],
+                "predictions": point_pred[0].numpy(),
+            }
+            for q_idx, q_level in enumerate(quantile_levels):
+                data[str(q_level)] = q_pred[0, :, q_idx].numpy()
+            result_dfs.append(pd.DataFrame(data))
+        return pd.concat(result_dfs, ignore_index=True)
 
-        # preds: list of (1, Q, H) -> stack to (N, Q, H)
-        all_preds = torch.cat(preds, dim=0)  # (N, Q, H)
-        actual_horizon = all_preds.shape[-1]  # may be < prediction_length if clamped
+    def fit(self, *args, **kwargs):
+        """Fine-tune through the upstream Chronos-2 trainer.
 
-        # Select/interpolate requested quantile levels vectorized
-        selected = _select_quantiles(all_preds, self.quantiles, quantile_levels)  # (N, actual_horizon, len(ql))
+        CuteChronos is an inference-optimized module. Full and LoRA fine-tuning
+        are delegated to the official Chronos2Pipeline, then wrapped back in
+        this compatibility class so callers can keep using the same API.
+        """
+        if self._is_cute:
+            raise NotImplementedError(
+                "Fine-tuning CuteChronos2Model directly is not implemented yet. "
+                "Load with use_cute=False to use upstream Chronos-2 full or LoRA fine-tuning."
+            )
+        from chronos.chronos2 import Chronos2Pipeline
 
-        n_series = len(item_ids)
-        n_steps = actual_horizon
-        n_ql = len(quantile_levels)
-
-        ids_repeated = [iid for iid in item_ids for _ in range(n_steps)]
-        steps_repeated = list(range(n_steps)) * n_series
-
-        result = {id_column: ids_repeated, "step": steps_repeated}
-        flat = selected.reshape(n_series * n_steps, n_ql)
-        for qi, ql in enumerate(quantile_levels):
-            result[str(ql)] = flat[:, qi].tolist()
-
-        return pd.DataFrame(result)
+        upstream = Chronos2Pipeline(self.model)
+        finetuned = upstream.fit(*args, **kwargs)
+        return type(self)(finetuned.model, device=self._device, _is_cute=False)

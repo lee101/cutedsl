@@ -572,16 +572,58 @@ class CuteChronos2Model(nn.Module):
         self,
         num_output_patches: int,
         batch_size: int,
+        context_loc_scale: tuple[torch.Tensor, torch.Tensor] | None = None,
+        future_covariates: torch.Tensor | None = None,
+        future_covariates_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Prepare future patches (no covariates, just zeros + time encoding)."""
+        """Prepare future patches with optional known future covariates."""
         dtype = self._param_dtype()
         output_patch_size = self.config.output_patch_size
 
-        patched_future_covariates = torch.zeros(
-            batch_size, num_output_patches, output_patch_size,
-            device=self._param_device(), dtype=dtype,
-        )
-        patched_future_covariates_mask = torch.zeros_like(patched_future_covariates)
+        if future_covariates is not None:
+            if future_covariates.shape[0] != batch_size or future_covariates.ndim != 2:
+                raise ValueError(
+                    f"future_covariates must have shape (batch_size={batch_size}, future_length), "
+                    f"found {tuple(future_covariates.shape)}"
+                )
+            future_length = num_output_patches * output_patch_size
+            if future_covariates.shape[-1] > future_length:
+                raise ValueError(
+                    "num_output_patches must be large enough to cover future_covariates "
+                    f"({future_covariates.shape[-1]} > {future_length})"
+                )
+            future_covariates = future_covariates.to(device=self._param_device(), dtype=torch.float32)
+            if future_covariates_mask is None:
+                future_covariates_mask = torch.isfinite(future_covariates).to(torch.float32)
+            else:
+                future_covariates_mask = future_covariates_mask.to(device=self._param_device(), dtype=torch.float32)
+                if future_covariates_mask.shape != future_covariates.shape:
+                    raise ValueError(
+                        "future_covariates_mask must have the same shape as future_covariates, "
+                        f"found {tuple(future_covariates_mask.shape)} and {tuple(future_covariates.shape)}"
+                    )
+            future_covariates = torch.where(future_covariates_mask > 0.0, future_covariates, 0.0)
+            if future_covariates.shape[-1] < future_length:
+                pad = future_length - future_covariates.shape[-1]
+                future_covariates = F.pad(future_covariates, (0, pad), value=0.0)
+                future_covariates_mask = F.pad(future_covariates_mask, (0, pad), value=0.0)
+            patched_future_covariates = future_covariates.view(batch_size, num_output_patches, output_patch_size)
+            patched_future_covariates_mask = future_covariates_mask.view(
+                batch_size, num_output_patches, output_patch_size
+            )
+            if context_loc_scale is not None:
+                normalized_future, _ = self.instance_norm(
+                    patched_future_covariates.view(batch_size, -1), context_loc_scale
+                )
+                patched_future_covariates = normalized_future.view(batch_size, num_output_patches, output_patch_size)
+            patched_future_covariates = patched_future_covariates.to(dtype)
+            patched_future_covariates_mask = patched_future_covariates_mask.to(dtype)
+        else:
+            patched_future_covariates = torch.zeros(
+                batch_size, num_output_patches, output_patch_size,
+                device=self._param_device(), dtype=dtype,
+            )
+            patched_future_covariates_mask = torch.zeros_like(patched_future_covariates)
 
         final_future_length = num_output_patches * output_patch_size
         future_time_enc = torch.arange(
@@ -788,6 +830,8 @@ class CuteChronos2Model(nn.Module):
         context_mask: torch.Tensor | None = None,
         num_output_patches: int = 1,
         group_ids: torch.Tensor | None = None,
+        future_covariates: torch.Tensor | None = None,
+        future_covariates_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass producing quantile predictions.
 
@@ -825,7 +869,13 @@ class CuteChronos2Model(nn.Module):
             )
 
         # Prepare future patches
-        patched_future = self._prepare_patched_future(num_output_patches, batch_size)
+        patched_future = self._prepare_patched_future(
+            num_output_patches,
+            batch_size,
+            context_loc_scale=loc_scale,
+            future_covariates=future_covariates,
+            future_covariates_mask=future_covariates_mask,
+        )
         future_embeds = self.input_patch_embedding(patched_future)
         future_attention_mask = torch.ones(
             batch_size, num_output_patches, dtype=dtype, device=input_embeds.device,
