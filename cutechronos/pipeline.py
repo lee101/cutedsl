@@ -123,13 +123,19 @@ def _prepare_single_rich_task(task: Mapping[str, Any], idx: int, prediction_leng
 
 def _left_pad_and_cat_2d(tensors: list[torch.Tensor]) -> torch.Tensor:
     max_len = max(t.shape[-1] for t in tensors)
-    padded = []
+    total_rows = sum(t.shape[0] for t in tensors)
+    result = torch.full(
+        (total_rows, max_len),
+        float("nan"),
+        dtype=tensors[0].dtype,
+        device=tensors[0].device,
+    )
+    row_start = 0
     for tensor in tensors:
-        if tensor.shape[-1] < max_len:
-            pad = torch.full((tensor.shape[0], max_len - tensor.shape[-1]), float("nan"), dtype=tensor.dtype)
-            tensor = torch.cat([pad, tensor], dim=-1)
-        padded.append(tensor)
-    return torch.cat(padded, dim=0)
+        row_end = row_start + tensor.shape[0]
+        result[row_start:row_end, -tensor.shape[-1]:] = tensor
+        row_start = row_end
+    return result
 
 
 def _convert_df_to_rich_inputs(df, future_df, id_column, timestamp_column, target_columns, prediction_length):
@@ -346,14 +352,15 @@ class CuteChronos2Pipeline:
     def _left_pad_and_stack_rows(rows: List[torch.Tensor]) -> torch.Tensor:
         """Left-pad variable-length 1D rows and stack into a 2D batch."""
         max_len = max(row.shape[-1] for row in rows)
-        padded = []
-        for row in rows:
-            pad_len = max_len - row.shape[-1]
-            if pad_len > 0:
-                pad = torch.full((pad_len,), float("nan"), dtype=row.dtype, device=row.device)
-                row = torch.cat([pad, row])
-            padded.append(row)
-        return torch.stack(padded)
+        result = torch.full(
+            (len(rows), max_len),
+            float("nan"),
+            dtype=rows[0].dtype,
+            device=rows[0].device,
+        )
+        for idx, row in enumerate(rows):
+            result[idx, -row.shape[-1]:] = row
+        return result
 
     @staticmethod
     def _as_tensor(value: Any) -> torch.Tensor:

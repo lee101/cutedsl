@@ -653,12 +653,13 @@ class CuteChronos2Model(nn.Module):
     def _construct_and_invert_group_time_mask(
         group_ids: torch.Tensor, attention_mask: torch.Tensor, floating_type: torch.dtype
     ) -> torch.Tensor:
-        group_mask = group_ids[:, None] == group_ids[None, :]
-        group_time_mask = torch.einsum("qb, bt -> qbt", group_mask.to(floating_type), attention_mask.to(floating_type))
-        # reshape: (q, b, t) -> (t, 1, q, b) to match attention scores shape
-        group_time_mask = group_time_mask.permute(2, 0, 1).unsqueeze(1)  # (t, 1, q, b)
-        group_time_mask = (1.0 - group_time_mask) * torch.finfo(floating_type).min
-        return group_time_mask
+        valid = (group_ids[:, None, None] == group_ids[None, :, None]) & (attention_mask[None, :, :] > 0)
+        valid = valid.permute(2, 0, 1).unsqueeze(1)  # (t, 1, q, b)
+        return torch.where(
+            valid,
+            torch.zeros((), device=attention_mask.device, dtype=floating_type),
+            torch.full((), torch.finfo(floating_type).min, device=attention_mask.device, dtype=floating_type),
+        )
 
     def _param_dtype(self) -> torch.dtype:
         """Get the dtype of model parameters."""
@@ -671,13 +672,28 @@ class CuteChronos2Model(nn.Module):
     def _get_position_ids(self, seq_length: int) -> torch.Tensor:
         """Generate position_ids tensor.
 
-        Creates a fresh tensor each time to be compatible with CUDA graphs
-        (torch.compile reduce-overhead mode). The cost is negligible compared
-        to the attention computation.
+        Reuses a cached eager-mode tensor to avoid an allocation on every
+        forward. During torch.compile tracing, this falls back to a fresh tensor
+        so graph capture can own the allocation.
         """
-        return torch.arange(
-            seq_length, dtype=torch.long, device=self._param_device()
-        ).unsqueeze(0)
+        compiler = getattr(torch, "compiler", None)
+        is_compiling = getattr(compiler, "is_compiling", None) if compiler is not None else None
+        if is_compiling is not None and is_compiling():
+            return torch.arange(
+                seq_length, dtype=torch.long, device=self._param_device()
+            ).unsqueeze(0)
+
+        device = self._param_device()
+        if (
+            self._cached_seq_length != seq_length
+            or self._cached_position_ids.device != device
+            or self._cached_position_ids.numel() == 0
+        ):
+            self._cached_position_ids = torch.arange(
+                seq_length, dtype=torch.long, device=device
+            ).unsqueeze(0)
+            self._cached_seq_length = seq_length
+        return self._cached_position_ids
 
     def _get_position_ids_batched(self, seq_length: int, batch_size: int) -> torch.Tensor:
         """Position IDs expanded to batch size for Triton RoPE kernel."""

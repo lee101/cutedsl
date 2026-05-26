@@ -291,6 +291,45 @@ def test_position_ids_values():
     assert torch.equal(pos_ids, expected), "Position IDs should be sequential from 0"
 
 
+def test_position_ids_cache_reuse():
+    """Repeated eager position ID requests should reuse the cached tensor."""
+    cute = build_cute_only()
+
+    pos_ids_1 = cute._get_position_ids(34)
+    pos_ids_2 = cute._get_position_ids(34)
+
+    assert pos_ids_1.data_ptr() == pos_ids_2.data_ptr()
+    assert cute._cached_seq_length == 34
+
+
+def test_group_time_mask_matches_einsum_reference():
+    """Boolean group-mask construction must match the previous einsum path."""
+    group_ids = torch.tensor([0, 0, 1, 2, 2], dtype=torch.long)
+    attention_mask = torch.tensor(
+        [
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    group_mask = group_ids[:, None] == group_ids[None, :]
+    expected = torch.einsum("qb, bt -> qbt", group_mask.float(), attention_mask)
+    expected = expected.permute(2, 0, 1).unsqueeze(1)
+    expected = (1.0 - expected) * torch.finfo(torch.float32).min
+
+    actual = CuteChronos2Model._construct_and_invert_group_time_mask(
+        group_ids,
+        attention_mask,
+        torch.float32,
+    )
+
+    assert torch.equal(actual, expected)
+
+
 # -------------------------------------------------------------------
 # Test: memory optimization regression check (before vs after)
 # -------------------------------------------------------------------

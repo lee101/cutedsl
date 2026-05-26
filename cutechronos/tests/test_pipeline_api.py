@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from cutechronos.pipeline import CuteChronos2Pipeline
+from cutechronos.pipeline import CuteChronos2Pipeline, _left_pad_and_cat_2d
 
 
 class _DummyPipeline:
@@ -55,3 +55,42 @@ def test_predict_quantiles_forwards_cross_learning_and_batch_size() -> None:
     assert kwargs["batch_size"] == 7
     assert quantiles[0].shape == (1, 2, 1)
     assert mean[0].shape == (1, 2)
+
+
+def test_left_pad_and_stack_rows_matches_cat_reference() -> None:
+    rows = [
+        torch.tensor([1.0, 2.0]),
+        torch.tensor([3.0, 4.0, 5.0, 6.0]),
+        torch.tensor([7.0]),
+    ]
+
+    expected = torch.tensor(
+        [
+            [float("nan"), float("nan"), 1.0, 2.0],
+            [3.0, 4.0, 5.0, 6.0],
+            [float("nan"), float("nan"), float("nan"), 7.0],
+        ]
+    )
+
+    actual = CuteChronos2Pipeline._left_pad_and_stack_rows(rows)
+    torch.testing.assert_close(actual, expected, equal_nan=True)
+
+
+def test_left_pad_and_cat_2d_matches_cat_reference() -> None:
+    tensors = [
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        torch.tensor([[5.0, 6.0, 7.0]]),
+        torch.tensor([[8.0]]),
+    ]
+
+    expected = torch.tensor(
+        [
+            [float("nan"), 1.0, 2.0],
+            [float("nan"), 3.0, 4.0],
+            [5.0, 6.0, 7.0],
+            [float("nan"), float("nan"), 8.0],
+        ]
+    )
+
+    actual = _left_pad_and_cat_2d(tensors)
+    torch.testing.assert_close(actual, expected, equal_nan=True)
