@@ -23,6 +23,42 @@
 
 ## Experiment Tracks
 
+### Track 0: Speculative Latent Walking (IN PROGRESS — "don't walk the latent space alone")
+**Goal**: Speculative decoding for diffusion. Big model takes 1 real step, a small
+walker drafts k cheap steps through latent space, a learned gap interpolator
+teleports the draft endpoint onto where the big model's trajectory would be,
+big model verifies with the next real step. Target: large step-count reduction
+with near-zero quality loss on Z-Image Turbo (images.netwrck.com prod model).
+
+**Code**: `latentteleport/speculative.py` (LatentWalker draft net, GapInterpolator
+teleport net, `speculative_denoise` manual FlowMatch loop that actually skips
+transformer calls), `scripts/spec_collect.py` (trajectory capture →
+/sdb-disk/latentteleport-spec), `scripts/spec_gap.py` (predictability analysis:
+identity vs taylor1 vs affine per (t,k)), `scripts/spec_train.py` (joint walker+
+interp training, relL2 eval), `scripts/spec_e2e.py` (wall-clock + PSNR vs
+full-step baseline, saves image triptychs).
+
+**Design notes**:
+- relL2 metric = err / actual-movement; 1.0 means predictor is no better than
+  not moving. taylor1 is the training-free floor (cgtaylor-style); the walker
+  must beat it and the interpolator must close the remaining gap.
+- Interpolator is residual-on-draft with zero-init out conv → starts as
+  identity-on-walker, can only help.
+- Trained on 16-step 512x512 trajectories, guidance 0 (prod turbo settings are
+  4-step 1024x1024 — resolution/step-count generalization is a later sweep).
+- Combine with Track 2 kNN trajectory priors: warm-start the walker rollout
+  with neighbor deltas; and with cgtaylor-style confidence gating for
+  accept/reject (fall back to real steps when the interpolator is uncertain).
+
+**Next steps**:
+- [ ] Gap analysis numbers on 200 trajs (running)
+- [ ] Walker+interp training, relL2 vs taylor1 baseline
+- [ ] e2e: steps=16 draft_k=1..4 sweep, PSNR/speedup frontier
+- [ ] 4-step prod config: draft_k=1 (2 real steps) — the deployable case
+- [ ] Text-conditioning for walker/interp (cfg.text_dim=2560, pooled emb)
+- [ ] Distill walker from bigger rollouts; try latent-space consistency loss
+- [ ] Confidence gate: accept/reject teleports via predicted error head
+
 ### Track 1: ControlNet Training (IN PROGRESS)
 **Goal**: Train canny ControlNet for Z-Image on daisy
 
