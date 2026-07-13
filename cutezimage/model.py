@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import os
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -21,6 +22,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
+
+logger = logging.getLogger(__name__)
 
 # Module-level constants matching diffusers transformer_z_image.py
 ADALN_EMBED_DIM = 256
@@ -119,6 +122,47 @@ def _rms_norm_fallback(x: torch.Tensor, weight: torch.Tensor | None, eps: float)
 
 def _silu_gate_fallback(x1: torch.Tensor, x3: torch.Tensor) -> torch.Tensor:
     return F.silu(x1) * x3
+
+
+_HF_ACTIVATION_KERNEL = None
+_HF_ACTIVATION_LOAD_FAILED = False
+
+
+def _hf_activation_enabled() -> bool:
+    setting = os.environ.get("CUTEZIMAGE_USE_HF_ACTIVATION_KERNELS", "0").strip().lower()
+    return setting in {"1", "true", "yes", "on"}
+
+
+def _get_hf_activation_kernel():
+    global _HF_ACTIVATION_KERNEL, _HF_ACTIVATION_LOAD_FAILED
+
+    if _HF_ACTIVATION_KERNEL is not None:
+        return _HF_ACTIVATION_KERNEL
+    if _HF_ACTIVATION_LOAD_FAILED or not _hf_activation_enabled() or not torch.cuda.is_available():
+        return None
+    try:
+        from kernels import get_kernel
+
+        _HF_ACTIVATION_KERNEL = get_kernel("kernels-community/activation", version=1)
+    except Exception as exc:  # pragma: no cover - depends on optional package/runtime
+        _HF_ACTIVATION_LOAD_FAILED = True
+        logger.warning("CuteZImage Hugging Face activation kernels unavailable; falling back: %s", exc)
+        return None
+    return _HF_ACTIVATION_KERNEL
+
+
+def _hf_silu_gate(x1: torch.Tensor, x3: torch.Tensor) -> torch.Tensor | None:
+    activation = _get_hf_activation_kernel()
+    if activation is None:
+        return None
+    try:
+        merged = torch.cat((x1, x3), dim=-1).contiguous()
+        out = torch.empty_like(x1)
+        activation.silu_and_mul(out, merged)
+        return out
+    except Exception as exc:  # pragma: no cover - runtime fallback
+        logger.warning("CuteZImage Hugging Face silu_and_mul failed; falling back: %s", exc)
+        return None
 
 
 def _apply_rope_complex_fallback(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
@@ -259,11 +303,13 @@ class SiLUGatedFFN(nn.Module):
 
         x1 = self.w1(x)
         x3 = self.w3(x)
-        if x.is_cuda:
-            silu_gate_fn = _get_silu_gate()
-        else:
-            silu_gate_fn = _silu_gate_fallback
-        gated = silu_gate_fn(x1, x3)
+        gated = _hf_silu_gate(x1, x3) if x.is_cuda else None
+        if gated is None:
+            if x.is_cuda:
+                silu_gate_fn = _get_silu_gate()
+            else:
+                silu_gate_fn = _silu_gate_fallback
+            gated = silu_gate_fn(x1, x3)
         return self.w2(gated)
 
 

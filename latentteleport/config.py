@@ -41,7 +41,7 @@ class TokenizerConfig:
 @dataclass
 class CombinerConfig:
     method: Literal["slerp", "neural", "tree"] = "slerp"
-    refinement_steps: int = 5
+    refinement_steps: int = 8
     slerp_t: float = 0.5
     neural_hidden_dim: int = 1024
     neural_num_layers: int = 4

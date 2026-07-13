@@ -55,23 +55,14 @@ def main():
     nsteps = torch.tensor([float(args.steps)], device=dev)
 
     def batch_from(trajset, bs):
-        anchors, targets, drafts_gt, ts, ks = [], [], [], [], []
-        for _ in range(bs):
-            tr = random.choice(trajset)
-            k = random.randint(1, args.max_k)
-            t = random.randint(1, S - 1 - k)
-            anchors.append(tr[t])
-            targets.append(tr[t + k])
-            drafts_gt.append(tr[t : t + k + 1])
-            ts.append(t)
-            ks.append(k)
-        return (
-            torch.stack(anchors).to(dev),
-            torch.stack(targets).to(dev),
-            [d.to(dev) for d in drafts_gt],
-            torch.tensor(ts, device=dev, dtype=torch.float32),
-            torch.tensor(ks, device=dev, dtype=torch.float32),
-        )
+        # one shared (t, k) per batch so walker rollouts and teacher steps run
+        # batched. Window starts at t-1 so the anchor's incoming delta exists;
+        # excludes t=0 (pure-noise anchor) and the duplicated no-op final latent.
+        k = random.randint(1, args.max_k)
+        t = random.randint(1, S - 2 - k)
+        trs = [random.choice(trajset) for _ in range(bs)]
+        window = torch.stack([tr[t - 1 : t + k + 1] for tr in trs]).to(dev)  # [B, k+2, C, H, W]
+        return window, t, k
 
     iters = max(1, 60 * len(train) // args.batch)
     hist = []
@@ -79,34 +70,28 @@ def main():
         walker.train(); interp.train()
         t0, tot_w, tot_i = time.time(), 0.0, 0.0
         for it in range(iters):
-            anchors, targets, drafts_gt, ts, ks = batch_from(train, args.batch)
-            tfrac = ts / max(S - 1, 1)
-            kfrac = ks / max(S - 1, 1)
+            window, t, k = batch_from(train, args.batch)
+            anchors, targets = window[:, 1], window[:, -1]
+            anchor_delta = window[:, 1] - window[:, 0]
+            B = anchors.shape[0]
+            tfrac = torch.full((B,), t / max(S - 1, 1), device=dev)
+            kfrac = torch.full((B,), k / max(S - 1, 1), device=dev)
 
-            # walker: teacher-forced single steps at every offset in the window
+            # walker: teacher-forced single steps at every offset (batched),
+            # delta = the real incoming movement at each offset
             loss_w = 0.0
-            for j in range(args.max_k):
-                xs, ys, mask = [], [], []
-                for b, d in enumerate(drafts_gt):
-                    if j + 1 < d.shape[0]:
-                        xs.append(d[j]); ys.append(d[j + 1]); mask.append(b)
-                if not xs:
-                    continue
-                x = torch.stack(xs); y = torch.stack(ys)
-                tf = (ts[mask] + j) / max(S - 1, 1)
-                pred = walker(x, tf, nsteps.expand(x.shape[0]))
-                loss_w = loss_w + F.mse_loss(pred, y)
+            for j in range(k):
+                tf = torch.full((B,), (t + j) / max(S - 1, 1), device=dev)
+                d = window[:, j + 1] - window[:, j]
+                pred = walker(window[:, j + 1], d, tf, nsteps.expand(B))
+                loss_w = loss_w + F.mse_loss(pred, window[:, j + 2])
 
-            # interp: correct the walker's own rollout endpoint (detached)
+            # interp: correct the walker's own batched rollout endpoint (detached)
             with torch.no_grad():
                 walker.eval()
-                draft_ends = []
-                for b in range(anchors.shape[0]):
-                    outs = walker.rollout(anchors[b : b + 1], int(ts[b]), int(ks[b]), args.steps)
-                    draft_ends.append(outs[-1][0])
+                draft_end = walker.rollout(anchors, anchor_delta, t, k, args.steps)[-1]
                 walker.train()
-            draft_end = torch.stack(draft_ends)
-            pred = interp(anchors, draft_end, tfrac, kfrac)
+            pred = interp(anchors, anchor_delta, draft_end, tfrac, kfrac)
             loss_i = F.mse_loss(pred, targets)
 
             loss = loss_w + loss_i
@@ -115,18 +100,27 @@ def main():
 
         walker.eval(); interp.eval()
         with torch.no_grad():
-            anchors, targets, _, ts, ks = batch_from(test, 64)
-            draft_ends = torch.stack([
-                walker.rollout(anchors[b : b + 1], int(ts[b]), int(ks[b]), args.steps)[-1][0]
-                for b in range(anchors.shape[0])
-            ])
-            pred = interp(anchors, draft_ends, ts / max(S - 1, 1), ks / max(S - 1, 1))
-            move = (targets - anchors).flatten(1).norm(dim=1).clamp_min(1e-8)
-            rel_interp = ((pred - targets).flatten(1).norm(dim=1) / move).mean().item()
-            rel_walker = ((draft_ends - targets).flatten(1).norm(dim=1) / move).mean().item()
+            rels_w, rels_i, rels_t = [], [], []
+            for _ in range(16):
+                window, t, k = batch_from(test, 32)
+                anchors, targets = window[:, 1], window[:, -1]
+                anchor_delta = window[:, 1] - window[:, 0]
+                B = anchors.shape[0]
+                draft_end = walker.rollout(anchors, anchor_delta, t, k, args.steps)[-1]
+                pred = interp(anchors, anchor_delta, draft_end,
+                              torch.full((B,), t / max(S - 1, 1), device=dev),
+                              torch.full((B,), k / max(S - 1, 1), device=dev))
+                move = (targets - anchors).flatten(1).norm(dim=1).clamp_min(1e-8)
+                rels_i.append(((pred - targets).flatten(1).norm(dim=1) / move).mean().item())
+                rels_w.append(((draft_end - targets).flatten(1).norm(dim=1) / move).mean().item())
+                tay = anchors + k * anchor_delta
+                rels_t.append(((tay - targets).flatten(1).norm(dim=1) / move).mean().item())
+            rel_interp = sum(rels_i) / len(rels_i)
+            rel_walker = sum(rels_w) / len(rels_w)
+            rel_taylor = sum(rels_t) / len(rels_t)
         print(
             f"ep{ep}: walker {tot_w/iters:.4f} interp {tot_i/iters:.4f} "
-            f"| test relL2 walker {rel_walker:.3f} interp {rel_interp:.3f} ({time.time()-t0:.0f}s)",
+            f"| test relL2 walker {rel_walker:.3f} interp {rel_interp:.3f} taylor {rel_taylor:.3f} ({time.time()-t0:.0f}s)",
             flush=True,
         )
         hist.append({"epoch": ep, "rel_walker": rel_walker, "rel_interp": rel_interp})

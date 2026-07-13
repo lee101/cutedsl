@@ -1,6 +1,9 @@
 """Tests for latent cache."""
 
+import concurrent.futures
+import sqlite3
 import tempfile
+from pathlib import Path
 
 import torch
 
@@ -47,6 +50,29 @@ class TestLatentCache:
         loaded = self.cache.load_text_embedding(unit)
         assert loaded is not None
         assert loaded.shape == (2560,)
+
+    def test_store_latents_detaches_grad_tracked_embeddings_across_prompt_lengths(self):
+        prompts = [
+            "portrait",
+            "cinematic portrait with soft window light and detailed natural textures",
+            " ".join(["cinematic portrait with detailed natural textures"] * 40),
+        ]
+
+        for prompt in prompts:
+            unit = VisualUnit.from_text(prompt)
+            embedding = torch.randn(8, 16, requires_grad=True)
+            expected = embedding.detach().float().mean(0)
+
+            self.cache.store_latents(
+                unit,
+                {0: torch.randn(1, 1, 2, 2, requires_grad=True)},
+                text_embedding=embedding,
+            )
+
+            stored = self.cache.load_text_embedding(unit)
+            assert stored is not None
+            assert not stored.requires_grad
+            assert torch.equal(stored, expected)
 
     def test_find_nearest(self):
         for name in ["cat", "dog", "car"]:
@@ -99,3 +125,93 @@ class TestLatentCache:
         loaded = self.cache.load_unit_by_id(unit.unit_id)
         assert loaded is not None
         assert loaded.text == unit.text
+
+    def test_store_latents_recreates_truncated_index_across_prompt_lengths(self):
+        db_path = Path(self.tmpdir) / "512x512" / "index.sqlite"
+        db_path.write_bytes(b"")
+
+        prompts = [
+            "gargoyle",
+            "ancient stone gargoyle statue sculpture",
+            " ".join(["cinematic fantasy stone gargoyle with moss and rim light"] * 12),
+            " ".join(["high quality coherent gothic cathedral gargoyle sculpture texture"] * 28),
+        ]
+
+        for prompt in prompts:
+            unit = VisualUnit.from_text(prompt)
+            self.cache.store_latents(unit, {0: torch.randn(1, 1, 2, 2)})
+            assert self.cache.has_unit(unit)
+
+        assert self.cache.stats()["num_units"] == len(prompts)
+
+    def test_store_latents_recovers_corrupt_index(self):
+        db_path = Path(self.tmpdir) / "512x512" / "index.sqlite"
+        db_path.write_bytes(b"not a sqlite database")
+
+        unit = VisualUnit.from_text("ancient stone gargoyle statue sculpture")
+        self.cache.store_latents(unit, {0: torch.randn(1, 1, 2, 2)})
+
+        assert self.cache.has_unit(unit)
+        assert self.cache.stats()["num_units"] == 1
+        assert list(db_path.parent.glob("index.corrupt-*.sqlite"))
+
+    def test_existing_index_missing_new_tables_is_migrated(self):
+        old_dir = Path(self.tmpdir) / "640x640"
+        old_dir.mkdir(parents=True)
+        conn = sqlite3.connect(old_dir / "index.sqlite")
+        conn.execute("""
+            CREATE TABLE units (
+                unit_id TEXT PRIMARY KEY,
+                unit_text TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                clip_embedding BLOB,
+                num_cached_steps INTEGER DEFAULT 0,
+                created_at REAL,
+                metadata TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE bigrams (
+                bigram_id TEXT PRIMARY KEY,
+                unit_a_id TEXT NOT NULL,
+                unit_b_id TEXT NOT NULL,
+                unit_a_text TEXT NOT NULL,
+                unit_b_text TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                num_cached_steps INTEGER DEFAULT 0,
+                created_at REAL,
+                metadata TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        cache = LatentCache(self.tmpdir, resolution=(640, 640))
+        unit = VisualUnit.from_text("medium prompt with migrated schema")
+        cache.store_latents(unit, {0: torch.randn(1, 1, 2, 2)})
+        cache.record_prompt(unit.text, unit, [unit], width=640, height=640, steps=1)
+
+        stats = cache.stats()
+        assert stats["num_units"] == 1
+        assert stats["num_prompts"] == 1
+
+    def test_concurrent_store_latents_initializes_schema_once(self):
+        tmpdir = tempfile.mkdtemp()
+        prompts = [
+            "short gargoyle",
+            "ancient stone gargoyle statue sculpture",
+            " ".join(["cinematic fantasy gargoyle with moss and rim light"] * 8),
+            " ".join(["high quality coherent gothic cathedral gargoyle sculpture texture"] * 20),
+        ]
+
+        def write_prompt(prompt: str):
+            cache = LatentCache(tmpdir, resolution=(768, 768))
+            unit = VisualUnit.from_text(prompt)
+            cache.store_latents(unit, {0: torch.randn(1, 1, 2, 2)})
+            return cache.has_unit(unit)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            assert all(pool.map(write_prompt, prompts))
+
+        cache = LatentCache(tmpdir, resolution=(768, 768))
+        assert cache.stats()["num_units"] == len(prompts)

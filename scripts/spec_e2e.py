@@ -65,11 +65,23 @@ def main():
     ap.add_argument("--draft-k", type=int, default=3)
     ap.add_argument("--n", type=int, default=6)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--cute", action="store_true", help="cutezimage accelerated transformer for real steps")
+    ap.add_argument("--compile-nets", action="store_true", help="torch.compile walker+interp (reduce-overhead)")
+    ap.add_argument("--offload", action="store_true", help="cpu-offload pipeline modules (shared-GPU safety)")
     args = ap.parse_args()
 
-    from diffusers import ZImagePipeline
+    if args.cute:
+        from cutezimage.pipeline import get_zimage_pipelines
 
-    pipe = ZImagePipeline.from_pretrained(MODEL, torch_dtype=torch.bfloat16).to("cuda")
+        pipe, _ = get_zimage_pipelines(MODEL, torch_dtype=torch.bfloat16, use_cute=True)
+    else:
+        from diffusers import ZImagePipeline
+
+        pipe = ZImagePipeline.from_pretrained(MODEL, torch_dtype=torch.bfloat16)
+        if args.offload:
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe = pipe.to("cuda")
     pipe.set_progress_bar_config(disable=True)
 
     ckpt = torch.load(BASE / f"ckpt-{args.steps}step-{args.size}" / "spec.pt", map_location="cuda", weights_only=False)
@@ -78,6 +90,9 @@ def main():
     walker.load_state_dict(ckpt["walker"])
     interp = GapInterpolator(cfg).to("cuda").eval()
     interp.load_state_dict(ckpt["interp"])
+    if args.compile_nets:
+        walker.forward = torch.compile(walker.forward, mode="reduce-overhead")
+        interp.forward = torch.compile(interp.forward, mode="reduce-overhead")
 
     out_dir = Path(args.out or BASE / f"e2e-{args.steps}step-k{args.draft_k}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -88,42 +103,27 @@ def main():
         img_base, lat_base = baseline(pipe, prompt, args.steps, args.size, seed=7)
         torch.cuda.synchronize(); t_base = time.time() - t0
 
-        t0 = time.time()
-        img_spec, stats = speculative_denoise(
-            pipe, prompt, walker, interp, total_steps=args.steps, draft_k=args.draft_k,
-            height=args.size, width=args.size, seed=7,
-        )
-        torch.cuda.synchronize(); t_spec = time.time() - t0
-
-        t0 = time.time()
-        img_id, stats_id = speculative_denoise(
-            pipe, prompt, None, None, total_steps=args.steps, draft_k=args.draft_k,
-            height=args.size, width=args.size, seed=7,
-        )
-        torch.cuda.synchronize(); t_id = time.time() - t0
-
-        row = {
-            "prompt": prompt,
-            "t_baseline": round(t_base, 2),
-            "t_spec": round(t_spec, 2),
-            "speedup": round(t_base / t_spec, 2),
-            "big_steps": stats["big_steps"],
-            "psnr_spec": round(psnr(img_base[0], img_spec[0]), 2),
-            "psnr_identity_skip": round(psnr(img_base[0], img_id[0]), 2),
-        }
+        row = {"prompt": prompt[:40], "t_baseline": round(t_base, 2)}
+        img_base[0].save(out_dir / f"{i}_base.png")
+        for mode in ("spec", "taylor", "skip"):
+            t0 = time.time()
+            img_m, stats = speculative_denoise(
+                pipe, prompt, walker, interp, total_steps=args.steps, draft_k=args.draft_k,
+                height=args.size, width=args.size, seed=7, mode=mode,
+            )
+            torch.cuda.synchronize(); t_m = time.time() - t0
+            row[f"t_{mode}"] = round(t_m, 2)
+            row[f"speedup_{mode}"] = round(t_base / t_m, 2)
+            row[f"psnr_{mode}"] = round(psnr(img_base[0], img_m[0]), 2)
+            row["big_steps"] = stats["big_steps"]
+            img_m[0].save(out_dir / f"{i}_{mode}.png")
         rows.append(row)
         print(row, flush=True)
-        img_base[0].save(out_dir / f"{i}_base.png")
-        img_spec[0].save(out_dir / f"{i}_spec.png")
-        img_id[0].save(out_dir / f"{i}_skip.png")
 
-    summary = {
-        "steps": args.steps, "draft_k": args.draft_k,
-        "mean_speedup": round(sum(r["speedup"] for r in rows) / len(rows), 2),
-        "mean_psnr_spec": round(sum(r["psnr_spec"] for r in rows) / len(rows), 2),
-        "mean_psnr_skip": round(sum(r["psnr_identity_skip"] for r in rows) / len(rows), 2),
-        "rows": rows,
-    }
+    summary = {"steps": args.steps, "draft_k": args.draft_k, "rows": rows}
+    for mode in ("spec", "taylor", "skip"):
+        summary[f"mean_speedup_{mode}"] = round(sum(r[f"speedup_{mode}"] for r in rows) / len(rows), 2)
+        summary[f"mean_psnr_{mode}"] = round(sum(r[f"psnr_{mode}"] for r in rows) / len(rows), 2)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=1))
     print(json.dumps({k: v for k, v in summary.items() if k != "rows"}))
     print(f"images + summary in {out_dir}")

@@ -20,12 +20,15 @@ from latentteleport.step_forecaster import LatentStepForecaster
 log = logging.getLogger(__name__)
 
 
+@torch.inference_mode()
 def refine_from_latent(
     pipe,
     latent: torch.Tensor,
     prompt: str,
     negative_prompt: str | None,
     start_step: int,
+    prompt_embeds: list[torch.Tensor] | None = None,
+    negative_prompt_embeds: list[torch.Tensor] | None = None,
     num_total_steps: int = 20,
     height: int = 512,
     width: int = 512,
@@ -44,12 +47,19 @@ def refine_from_latent(
         latent = latent.unsqueeze(0)
     latents = latent
 
-    prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        do_classifier_free_guidance=guidance_scale > 0,
-        device=device,
-    )
+    if prompt_embeds is None:
+        prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            do_classifier_free_guidance=guidance_scale > 0,
+            device=device,
+        )
+    else:
+        prompt_embeds = [emb.to(device=device, dtype=pipe.transformer.dtype) for emb in prompt_embeds]
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = [
+                emb.to(device=device, dtype=pipe.transformer.dtype) for emb in negative_prompt_embeds
+            ]
 
     batch_size = latents.shape[0]
     image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
@@ -77,7 +87,7 @@ def refine_from_latent(
     for i, t in enumerate(remaining_timesteps):
         timestep = t.expand(batch_size)
         timestep = (1000 - timestep) / 1000
-        apply_cfg = guidance_scale > 0 and bool(negative_prompt_embeds)
+        apply_cfg = guidance_scale > 0 and negative_prompt_embeds is not None
         if apply_cfg:
             latent_model_input = latents.to(pipe.transformer.dtype).repeat(2, 1, 1, 1)
             prompt_embeds_model_input = prompt_embeds + negative_prompt_embeds
@@ -112,6 +122,7 @@ def refine_from_latent(
         noise_pred = -noise_pred
         latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
 
+    latents = latents.to(pipe.vae.dtype)
     latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
     image = pipe.vae.decode(latents, return_dict=False)[0]
     image = pipe.image_processor.postprocess(image, output_type="pil")[0]
@@ -142,8 +153,8 @@ def refine_from_latent_simple(
     start_step = int(num_steps * (1.0 - strength))
 
     return refine_from_latent(
-        pipe, latent, prompt, start_step, num_steps,
-        negative_prompt, height, width, guidance_scale, seed, device,
+        pipe, latent, prompt, negative_prompt, start_step, None, None, num_steps,
+        height, width, guidance_scale, seed, device,
     )
 
 
@@ -196,7 +207,15 @@ class TeleportPipeline:
         self.combiner = combiner
         self.config = config
         self.comb_config = combiner_config
-        self._start_step = int(config.num_steps * combiner_config.teleport_timestep)
+        self._fixed_refinement_steps = (
+            max(1, min(config.num_steps, int(combiner_config.refinement_steps)))
+            if combiner_config.refinement_steps > 0
+            else None
+        )
+        if self._fixed_refinement_steps is not None:
+            self._start_step = max(0, config.num_steps - self._fixed_refinement_steps)
+        else:
+            self._start_step = int(config.num_steps * combiner_config.teleport_timestep)
         self.confidence_gate = confidence_gate or ConfidenceGate()
         self.step_forecaster = step_forecaster
 
@@ -320,25 +339,34 @@ class TeleportPipeline:
 
         combine_time = time.time() - t1
 
-        # 4. Confidence-gated adaptive refinement
+        # 4. Fixed or confidence-gated adaptive refinement
         t2 = time.time()
-        # Estimate how many refinement steps this combined latent needs
         text_sim = None
         if embeddings:
             # Use cache hit ratio as proxy for text match quality
             text_sim = hits / max(len(units), 1)
-        adaptive_steps = self.confidence_gate.estimate_steps(
-            combined, text_similarity=text_sim,
-        )
-        # Convert adaptive steps to start_step: more steps = earlier start
-        adaptive_start = max(0, self.config.num_steps - adaptive_steps)
-        log.info(f"Confidence gate: {adaptive_steps} refinement steps (start at {adaptive_start})")
+        if self._fixed_refinement_steps is not None:
+            adaptive_steps = self._fixed_refinement_steps
+            adaptive_start = self._start_step
+            log.info(f"Fixed refinement: {adaptive_steps} steps (start at {adaptive_start})")
+        else:
+            # Estimate how many refinement steps this combined latent needs.
+            adaptive_steps = self.confidence_gate.estimate_steps(
+                combined, text_similarity=text_sim,
+            )
+            # Convert adaptive steps to start_step: more steps = earlier start.
+            adaptive_start = max(0, self.config.num_steps - adaptive_steps)
+            log.info(f"Confidence gate: {adaptive_steps} refinement steps (start at {adaptive_start})")
 
         try:
             image = refine_from_latent(
                 self.pipe, combined, prompt, negative_prompt, adaptive_start,
-                self.config.num_steps, self.config.height, self.config.width,
-                self.config.guidance_scale, seed, self.config.device,
+                num_total_steps=self.config.num_steps,
+                height=self.config.height,
+                width=self.config.width,
+                guidance_scale=self.config.guidance_scale,
+                seed=seed,
+                device=self.config.device,
             )
         except Exception as e:
             log.warning(f"Refinement failed: {e}, falling back to full gen")

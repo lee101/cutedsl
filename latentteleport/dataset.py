@@ -89,8 +89,21 @@ def extract_text_embedding(pipe, prompt: str) -> torch.Tensor:
     with torch.no_grad():
         encoded = pipe.encode_prompt(prompt, do_classifier_free_guidance=False)
         if isinstance(encoded, tuple):
-            return encoded[0].cpu()
-        return encoded.cpu()
+            encoded = encoded[0]
+        if isinstance(encoded, list):
+            tensors = [item.detach().float().cpu() for item in encoded if torch.is_tensor(item)]
+            if not tensors:
+                raise ValueError("encode_prompt returned an empty tensor list")
+            if len(tensors) == 1:
+                encoded = tensors[0]
+            else:
+                pooled = [item.reshape(-1, item.shape[-1]).mean(dim=0) for item in tensors]
+                return torch.cat(pooled, dim=0)
+        if not torch.is_tensor(encoded):
+            raise TypeError(f"encode_prompt returned unsupported type: {type(encoded)!r}")
+        if encoded.dim() == 3 and encoded.shape[0] == 1:
+            encoded = encoded.squeeze(0)
+        return encoded.detach().float().cpu()
 
 
 def populate_cache(

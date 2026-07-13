@@ -60,13 +60,35 @@ def _select_quantiles(
 
 
 def _load_model_original(model_path: str, device: str = "cuda", dtype: torch.dtype = torch.bfloat16):
-    """Load via the upstream Chronos2Pipeline (requires chronos-forecasting)."""
-    from chronos.chronos2 import Chronos2Pipeline
+    """Load the upstream Chronos2Model with explicit weight loading.
 
-    pipeline = Chronos2Pipeline.from_pretrained(model_path, dtype=dtype)
-    model = pipeline.model
-    model = model.to(device)
+    Chronos2Pipeline.from_pretrained silently loads ZERO checkpoint tensors
+    under transformers>=5 (its custom-model loading path is incompatible with
+    v5's weight-loading machinery), yielding a randomly initialized network
+    with garbage non-persistent buffers (inv_freq, quantiles) — plausible or
+    NaN outputs. Construct + load_state_dict explicitly instead.
+    """
+    import os
+
+    from safetensors.torch import load_file
+    from transformers import AutoConfig
+    from chronos.chronos2.model import Chronos2Model
+
+    local_path = model_path
+    if not os.path.isdir(local_path):
+        from huggingface_hub import snapshot_download
+        local_path = snapshot_download(model_path)
+    cfg = AutoConfig.from_pretrained(local_path)
+    model = Chronos2Model(cfg)
+    model.load_state_dict(load_file(os.path.join(local_path, "model.safetensors")), strict=True)
+    model = model.to(device=device, dtype=dtype)
     model.eval()
+
+    ln = model.encoder.block[0].layer[0].layer_norm.weight.detach().float()
+    if torch.allclose(ln, torch.full_like(ln, ln.flatten()[0].item())):
+        raise RuntimeError(
+            "Chronos2 checkpoint sanity check failed: constant layer-norm weight (random init?)"
+        )
     return model
 
 

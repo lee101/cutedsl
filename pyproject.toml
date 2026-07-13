@@ -48,6 +48,14 @@ benchmark = [
     "clean-fid>=0.1.35",
     "python-dotenv>=1.0.0",
 ]
+diffusion = [
+    "diffusers>=0.37.1",
+    "transformers>=4.57.0",
+    "accelerate>=1.10.0",
+    "peft>=0.17.0",
+    "huggingface-hub>=0.34.0",
+    "Pillow>=10.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "mypy>=1.8.0",
@@ -75,9 +83,13 @@ cutedsl-teleport-benchmark = "latentteleport.benchmark:main"
 cutedsl-teleport-train-sequence = "latentteleport.train_sequence:main"
 cutedsl-teleport-demo = "latentteleport.demo:main"
 cutedsl-tubroquant-benchmark = "tubroquant.chronos_benchmark:main"
+cutedsl-loras-benchmark = "cuteloras.benchmark:main"
+cutedsl-diffusion-frontier = "diffusion_frontier.benchmark:main"
+cutedsl-sdxl-frontier = "diffusion_frontier.sdxl:main"
+cutedsl-consolidate-frontier = "diffusion_frontier.consolidate:main"
 
 [tool.setuptools.packages.find]
-include = ["cutechronos*", "cuteparakeet*", "cutezimage*", "zimageaccelerated*", "zimagecontrol*", "latentteleport*"]
+include = ["cutechronos*", "cuteparakeet*", "cutezimage*", "zimageaccelerated*", "zimagecontrol*", "latentteleport*", "cuteloras*", "diffusion_frontier*"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -89,7 +101,7 @@ torch = [{ index = "pytorch-cu128" }]
 torchvision = [{ index = "pytorch-cu128" }]
 
 [tool.pytest.ini_options]
-testpaths = ["cutechronos/tests", "cutezimage/tests", "latentteleport/tests", "tests", "turboquant/tests"]
+testpaths = ["cutechronos/tests", "cutezimage/tests", "latentteleport/tests", "tests", "turboquant/tests", "cuteloras/tests", "diffusion_frontier/tests"]
 markers = [
     "model_required: tests that require the original chronos-forecasting package",
 ]

@@ -49,49 +49,9 @@ class SpecConfig:
 
 
 class LatentWalker(nn.Module):
-    """Drafts x_{t+1} from x_t. Rolled out k times for speculation."""
-
-    def __init__(self, cfg: SpecConfig | None = None):
-        super().__init__()
-        self.cfg = cfg or SpecConfig()
-        c = self.cfg.hidden
-        in_ch = self.cfg.latent_channels
-        self.inp = nn.Conv2d(in_ch, c, 3, padding=1)
-        self.cond_mlp = nn.Sequential(
-            nn.Linear(128 + 128 + self.cfg.text_dim, self.cfg.cond_dim),
-            nn.SiLU(),
-            nn.Linear(self.cfg.cond_dim, self.cfg.cond_dim),
-        )
-        self.blocks = nn.ModuleList(FiLMResBlock(c, self.cfg.cond_dim) for _ in range(self.cfg.blocks))
-        self.out = nn.Conv2d(c, in_ch, 3, padding=1)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
-
-    def forward(self, x, t_frac, total_steps, text_emb=None):
-        cond = [timestep_embed(t_frac, 128), timestep_embed(total_steps.float() / 32.0, 128)]
-        if self.cfg.text_dim:
-            cond.append(text_emb if text_emb is not None else x.new_zeros(x.shape[0], self.cfg.text_dim))
-        cond = self.cond_mlp(torch.cat(cond, dim=-1))
-        h = self.inp(x)
-        for b in self.blocks:
-            h = b(h, cond)
-        return x + self.out(h)
-
-    @torch.no_grad()
-    def rollout(self, x, t_idx: int, k: int, total_steps: int, text_emb=None):
-        outs = []
-        cur = x
-        n = torch.full((x.shape[0],), float(total_steps), device=x.device)
-        for j in range(k):
-            tf = torch.full((x.shape[0],), (t_idx + j) / max(total_steps - 1, 1), device=x.device)
-            cur = self.forward(cur, tf, n, text_emb)
-            outs.append(cur)
-        return outs
-
-
-class GapInterpolator(nn.Module):
-    """Teleport correction: predict big-model x_{t+k} from anchor x_t and the
-    walker draft endpoint. Residual on the draft, so identity = trust walker."""
+    """Drafts x_{t+1} from (x_t, delta) where delta is the last step's movement
+    — the trajectory's momentum. Rolled out k times for speculation, updating
+    delta with its own predicted movement."""
 
     def __init__(self, cfg: SpecConfig | None = None):
         super().__init__()
@@ -109,12 +69,58 @@ class GapInterpolator(nn.Module):
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
-    def forward(self, anchor, draft, t_frac, k_frac, text_emb=None):
+    def forward(self, x, delta, t_frac, total_steps, text_emb=None):
+        cond = [timestep_embed(t_frac, 128), timestep_embed(total_steps.float() / 32.0, 128)]
+        if self.cfg.text_dim:
+            cond.append(text_emb if text_emb is not None else x.new_zeros(x.shape[0], self.cfg.text_dim))
+        cond = self.cond_mlp(torch.cat(cond, dim=-1))
+        h = self.inp(torch.cat([x, delta], dim=1))
+        for b in self.blocks:
+            h = b(h, cond)
+        # momentum prior: continue the last movement, learn the correction
+        return x + delta + self.out(h)
+
+    @torch.no_grad()
+    def rollout(self, x, delta, t_idx: int, k: int, total_steps: int, text_emb=None):
+        outs = []
+        cur, d = x, delta
+        n = torch.full((x.shape[0],), float(total_steps), device=x.device)
+        for j in range(k):
+            tf = torch.full((x.shape[0],), (t_idx + j) / max(total_steps - 1, 1), device=x.device)
+            nxt = self.forward(cur, d, tf, n, text_emb)
+            d = nxt - cur
+            cur = nxt
+            outs.append(cur)
+        return outs
+
+
+class GapInterpolator(nn.Module):
+    """Teleport correction: predict big-model x_{t+k} from (anchor x_t, the
+    anchor's real movement delta, walker draft endpoint). Residual on the
+    draft, so identity = trust walker."""
+
+    def __init__(self, cfg: SpecConfig | None = None):
+        super().__init__()
+        self.cfg = cfg or SpecConfig()
+        c = self.cfg.hidden
+        in_ch = self.cfg.latent_channels * 3
+        self.inp = nn.Conv2d(in_ch, c, 3, padding=1)
+        self.cond_mlp = nn.Sequential(
+            nn.Linear(128 + 128 + self.cfg.text_dim, self.cfg.cond_dim),
+            nn.SiLU(),
+            nn.Linear(self.cfg.cond_dim, self.cfg.cond_dim),
+        )
+        self.blocks = nn.ModuleList(FiLMResBlock(c, self.cfg.cond_dim) for _ in range(self.cfg.blocks))
+        self.out = nn.Conv2d(c, self.cfg.latent_channels, 3, padding=1)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+
+    def forward(self, anchor, delta, draft, t_frac, k_frac, text_emb=None):
         cond = [timestep_embed(t_frac, 128), timestep_embed(k_frac, 128)]
         if self.cfg.text_dim:
             cond.append(text_emb if text_emb is not None else anchor.new_zeros(anchor.shape[0], self.cfg.text_dim))
         cond = self.cond_mlp(torch.cat(cond, dim=-1))
-        h = self.inp(torch.cat([anchor, draft], dim=1))
+        h = self.inp(torch.cat([anchor, delta, draft], dim=1))
         for b in self.blocks:
             h = b(h, cond)
         return draft + self.out(h)
@@ -176,25 +182,31 @@ def speculative_denoise(
     width: int = 512,
     seed: int = 0,
     device: str = "cuda",
+    mode: str = "spec",  # spec | taylor | skip
 ):
     """Manual denoise on the FULL schedule, but every real step is followed by
-    draft_k walker steps teleport-corrected by the interpolator — those
-    transformer calls are skipped entirely. Last step is always real."""
+    draft_k teleported steps — those transformer calls are skipped entirely.
+    mode=spec: walker rollout + interpolator; taylor: x + k*(x - x_prev_real);
+    skip: no correction. Last step is always real."""
     prompt_embeds, latents, timesteps = zimage_prepare(pipe, prompt, total_steps, height, width, seed, device)
     stats = {"big_steps": 0, "drafted_steps": 0}
     i = 0
     n = len(timesteps)
     while i < n:
+        before = latents
         latents = zimage_big_step(pipe, latents, timesteps[i], prompt_embeds)
         stats["big_steps"] += 1
         i += 1
         k = min(draft_k, n - 1 - i)  # keep the final step real
         if k > 0:
-            if walker is not None and interp is not None:
-                drafts = walker.rollout(latents.float(), i, k, total_steps)
+            if mode == "spec" and walker is not None and interp is not None:
+                delta = (latents - before).float()
+                drafts = walker.rollout(latents.float(), delta, i, k, total_steps)
                 tf = torch.full((latents.shape[0],), i / max(total_steps - 1, 1), device=latents.device)
                 kf = torch.full((latents.shape[0],), k / max(total_steps - 1, 1), device=latents.device)
-                latents = interp(latents.float(), drafts[-1], tf, kf).to(torch.float32)
+                latents = interp(latents.float(), delta, drafts[-1], tf, kf).to(torch.float32)
+            elif mode == "taylor":
+                latents = latents + k * (latents - before)
             if hasattr(pipe.scheduler, "_step_index") and pipe.scheduler._step_index is not None:
                 pipe.scheduler._step_index += k
             stats["drafted_steps"] += k

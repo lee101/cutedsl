@@ -57,6 +57,13 @@ _ZIMAGE_PIPELINE_CACHE: dict[tuple[Any, ...], tuple[Any, Any]] = {}
 _ZIMAGE_CONTROLNET_CACHE: dict[tuple[Any, ...], Any] = {}
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _dtype_key(dtype: torch.dtype | None) -> str:
     return str(dtype) if dtype is not None else "auto"
 
@@ -90,13 +97,17 @@ def _configure_pipeline(
     device: str | torch.device | None = None,
     enable_cpu_offload: bool | None = None,
 ) -> None:
-    if hasattr(pipe, "enable_attention_slicing"):
+    if _env_flag("CUTEZIMAGE_ENABLE_ATTENTION_SLICING", False) and hasattr(pipe, "enable_attention_slicing"):
         pipe.enable_attention_slicing()
-    if hasattr(pipe, "enable_vae_slicing"):
+    if _env_flag("CUTEZIMAGE_ENABLE_VAE_SLICING", False) and hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
 
     if enable_cpu_offload is None:
-        enable_cpu_offload = torch.cuda.is_available()
+        enable_cpu_offload = _env_flag("CUTEZIMAGE_CPU_OFFLOAD", False)
+
+    if enable_cpu_offload and torch.cuda.is_available() and _env_flag("CUTEZIMAGE_SEQUENTIAL_CPU_OFFLOAD", False) and hasattr(pipe, "enable_sequential_cpu_offload"):
+        pipe.enable_sequential_cpu_offload()
+        return
 
     if enable_cpu_offload and torch.cuda.is_available() and hasattr(pipe, "enable_model_cpu_offload"):
         pipe.enable_model_cpu_offload()
@@ -104,6 +115,16 @@ def _configure_pipeline(
 
     if hasattr(pipe, "to"):
         pipe.to(_default_device(device))
+
+
+def _defer_component_cuda_move_for_offload(
+    *,
+    device: str | torch.device | None,
+    enable_cpu_offload: bool | None,
+) -> bool:
+    if enable_cpu_offload is not True or not torch.cuda.is_available():
+        return False
+    return _default_device(device).type == "cuda"
 
 
 def _require_zimage_support(*, controlnet: bool = False) -> None:
@@ -180,10 +201,14 @@ def accelerate_zimage_pipeline(
     if transformer is None:
         raise ValueError("Expected pipeline to expose a `transformer` attribute.")
 
+    build_device = "cpu" if _defer_component_cuda_move_for_offload(
+        device=device,
+        enable_cpu_offload=enable_cpu_offload,
+    ) else device
     pipe.transformer = build_cute_transformer(
         transformer,
         compile_mode=compile_mode,
-        device=device,
+        device=build_device,
         torch_dtype=torch_dtype,
     )
     setattr(pipe, "_uses_cutezimage", True)
@@ -283,6 +308,7 @@ def get_zimage_pipelines(
                 device=device,
                 torch_dtype=resolved_dtype,
                 configure=False,
+                enable_cpu_offload=enable_cpu_offload,
             )
 
         zimage_img2img_pipe = ZImageImg2ImgPipeline(**zimage_pipe.components)

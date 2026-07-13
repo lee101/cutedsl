@@ -602,6 +602,11 @@ class CuteChronos2Model(nn.Module):
                         "future_covariates_mask must have the same shape as future_covariates, "
                         f"found {tuple(future_covariates_mask.shape)} and {tuple(future_covariates.shape)}"
                     )
+            # Match upstream order: normalize first, then zero masked/padded
+            # slots. Zeroing before instance_norm maps masked slots to
+            # arcsinh((0-loc)/scale) != 0 instead of 0.
+            if context_loc_scale is not None:
+                future_covariates, _ = self.instance_norm(future_covariates, context_loc_scale)
             future_covariates = torch.where(future_covariates_mask > 0.0, future_covariates, 0.0)
             if future_covariates.shape[-1] < future_length:
                 pad = future_length - future_covariates.shape[-1]
@@ -611,11 +616,6 @@ class CuteChronos2Model(nn.Module):
             patched_future_covariates_mask = future_covariates_mask.view(
                 batch_size, num_output_patches, output_patch_size
             )
-            if context_loc_scale is not None:
-                normalized_future, _ = self.instance_norm(
-                    patched_future_covariates.view(batch_size, -1), context_loc_scale
-                )
-                patched_future_covariates = normalized_future.view(batch_size, num_output_patches, output_patch_size)
             patched_future_covariates = patched_future_covariates.to(dtype)
             patched_future_covariates_mask = patched_future_covariates_mask.to(dtype)
         else:

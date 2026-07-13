@@ -50,10 +50,16 @@ full-step baseline, saves image triptychs).
   with neighbor deltas; and with cgtaylor-style confidence gating for
   accept/reject (fall back to real steps when the interpolator is uncertain).
 
+**Results so far (2026-07-13, 200 trajs, 512x512, seed-matched)**:
+- Gap analysis: taylor1 relL2 0.21 (k=1) - 0.35 (k=4) mid-trajectory; scalar affine ~0.88; final scheduler step is a NO-OP (duplicate latent).
+- v1 walker (position only) plateaued at relL2 ~0.6 — worse than taylor.
+- v2 walker conditioned on momentum (x_t - x_{t-1}) + interp: relL2 ~0.25/0.26 vs taylor 0.30 on same windows (~18% better), one epoch to converge.
+- e2e 16-step, draft_k=3 (5 real transformer calls, 3.2x fewer): PSNR vs baseline — spec 16.5, taylor teleport 16.4, skip-no-correction 9.0 (pure noise). Spec/taylor images are fully coherent comparable-quality outputs (drift is compositional, not quality); skip is garbage. Artifacts in results/speculative/.
+
 **Next steps**:
-- [ ] Gap analysis numbers on 200 trajs (running)
-- [ ] Walker+interp training, relL2 vs taylor1 baseline
-- [ ] e2e: steps=16 draft_k=1..4 sweep, PSNR/speedup frontier
+- [x] Gap analysis numbers on 200 trajs
+- [x] Walker+interp training, relL2 vs taylor1 baseline (momentum conditioning is the key)
+- [ ] e2e: draft_k=1..2 sweep for the pixel-match knee (running)
 - [ ] 4-step prod config: draft_k=1 (2 real steps) — the deployable case
 - [ ] Text-conditioning for walker/interp (cfg.text_dim=2560, pooled emb)
 - [ ] Distill walker from bigger rollouts; try latent-space consistency loss

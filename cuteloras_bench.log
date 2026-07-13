@@ -1,0 +1,8 @@
+benchmarking 6 loras: ['90s_anime_aesthetic_style_z_image_turbo', 'atomic_heart_animerealistic_noir_moody_illustration_war', 'childishchilddrawing', 'flat_animestyle_agino_zimage_clear', 'medieval02landscapeenvironment', 'mosaicabstractcolorfulweirdart']
+Loading pipeline components...:   0%|          | 0/5 [00:00<?, ?it/s]Loading pipeline components...:  20%|██        | 1/5 [00:00<00:01,  2.65it/s]
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s][A
+Loading weights:   3%|▎         | 13/398 [00:00<00:19, 19.72it/s][A
+Loading weights:  10%|▉         | 38/398 [00:00<00:06, 58.47it/s][A
+Loading weights:  23%|██▎       | 92/398 [00:01<00:04, 63.33it/s][ALoading weights: 100%|██████████| 398/398 [00:01<00:00, 243.60it/s]
+Loading pipeline components...:  40%|████      | 2/5 [00:09<00:17,  5.69s/it]Loading pipeline components...:  60%|██████    | 3/5 [00:14<00:10,  5.42s/it]
+Loading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s][A

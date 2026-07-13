@@ -23,6 +23,8 @@ class _FakeCuteTransformer(_FakeTransformer):
         super().__init__(name=name)
         self.source = None
         self.compile_mode = None
+        self.to_device = None
+        self.to_dtype = None
 
     @classmethod
     def from_diffusers(cls, model):
@@ -37,6 +39,28 @@ class _FakeCuteTransformer(_FakeTransformer):
         inst.compile_mode = compile_mode
         return inst
 
+    @classmethod
+    def from_diffusers_accelerated(cls, model):
+        inst = cls()
+        inst.source = model
+        return inst
+
+    @classmethod
+    def from_diffusers_accelerated_compiled(cls, model, compile_mode="reduce-overhead"):
+        inst = cls()
+        inst.source = model
+        inst.compile_mode = compile_mode
+        return inst
+
+    def to(self, *args, **kwargs):
+        device = kwargs.get("device")
+        dtype = kwargs.get("dtype")
+        if args:
+            device = args[0]
+        self.to_device = str(device) if device is not None else None
+        self.to_dtype = dtype
+        return self
+
 
 class _FakePipelineBase:
     def __init__(self, *, transformer=None, controlnet=None, scheduler=None, vae=None, text_encoder=None, tokenizer=None):
@@ -50,6 +74,7 @@ class _FakePipelineBase:
         self.attention_slicing_enabled = False
         self.vae_slicing_enabled = False
         self.cpu_offload_enabled = False
+        self.sequential_cpu_offload_enabled = False
         self.to_device = None
         self.last_call = None
 
@@ -71,6 +96,9 @@ class _FakePipelineBase:
 
     def enable_model_cpu_offload(self):
         self.cpu_offload_enabled = True
+
+    def enable_sequential_cpu_offload(self):
+        self.sequential_cpu_offload_enabled = True
 
     def to(self, device):
         self.to_device = str(device)
@@ -144,7 +172,9 @@ def fake_pipeline_env(monkeypatch):
     zpipe.clear_pipeline_caches()
 
 
-def test_accelerate_zimage_pipeline_replaces_transformer(fake_pipeline_env):
+def test_accelerate_zimage_pipeline_replaces_transformer(fake_pipeline_env, monkeypatch):
+    monkeypatch.setenv("CUTEZIMAGE_ENABLE_ATTENTION_SLICING", "1")
+    monkeypatch.setenv("CUTEZIMAGE_ENABLE_VAE_SLICING", "1")
     pipe = _FakeZImagePipeline.from_pretrained("repo/zimage", torch_dtype=torch.float32, low_cpu_mem_usage=False)
     original_transformer = pipe.transformer
 
@@ -183,6 +213,42 @@ def test_get_zimage_pipelines_caches_and_shares_transformer(fake_pipeline_env):
     assert len(_FakeZImagePipeline.load_calls) == 1
     assert isinstance(text2img.transformer, _FakeCuteTransformer)
     assert img2img.transformer is text2img.transformer
+
+
+def test_get_zimage_pipelines_builds_cute_transformer_on_cpu_before_cuda_offload(fake_pipeline_env, monkeypatch):
+    monkeypatch.setattr(zpipe.torch.cuda, "is_available", lambda: True)
+
+    text2img, img2img = zpipe.get_zimage_pipelines(
+        model_path="repo/zimage",
+        torch_dtype=torch.float32,
+        device="cuda",
+        enable_cpu_offload=True,
+    )
+
+    assert isinstance(text2img.transformer, _FakeCuteTransformer)
+    assert text2img.transformer.to_device == "cpu"
+    assert text2img.transformer.to_dtype is torch.float32
+    assert text2img.cpu_offload_enabled is True
+    assert img2img.cpu_offload_enabled is True
+    assert text2img.to_device is None
+    assert img2img.to_device is None
+
+
+def test_get_zimage_pipelines_uses_sequential_offload_when_requested(fake_pipeline_env, monkeypatch):
+    monkeypatch.setattr(zpipe.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setenv("CUTEZIMAGE_SEQUENTIAL_CPU_OFFLOAD", "1")
+
+    text2img, img2img = zpipe.get_zimage_pipelines(
+        model_path="repo/zimage",
+        torch_dtype=torch.float32,
+        device="cuda",
+        enable_cpu_offload=True,
+    )
+
+    assert text2img.sequential_cpu_offload_enabled is True
+    assert img2img.sequential_cpu_offload_enabled is True
+    assert text2img.cpu_offload_enabled is False
+    assert img2img.cpu_offload_enabled is False
 
 
 def test_get_zimage_controlnet_pipeline_loads_single_file_and_shares_transformer(fake_pipeline_env):

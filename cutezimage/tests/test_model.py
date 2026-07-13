@@ -70,6 +70,35 @@ class TestSiLUGatedFFN:
         assert out.shape == x.shape
         assert torch.equal(out, torch.full_like(x, 7.0))
 
+    def test_uses_hf_silu_gate_when_enabled_on_cuda_inputs(self, monkeypatch):
+        ffn = SiLUGatedFFN(8, 16)
+        x = torch.randn(2, 4, 8)
+        calls: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+        def fake_hf_silu_gate(x1, x3):
+            calls.append((x1, x3))
+            return torch.zeros_like(x1)
+
+        def fail_regular_gate():
+            raise AssertionError("regular silu gate should not run when HF gate succeeds")
+
+        monkeypatch.setenv("CUTEZIMAGE_USE_HF_ACTIVATION_KERNELS", "1")
+        monkeypatch.setattr("cutezimage.model._get_fused_silu_gate_ffn", lambda: None)
+        monkeypatch.setattr("cutezimage.model._hf_silu_gate", fake_hf_silu_gate)
+        monkeypatch.setattr("cutezimage.model._get_silu_gate", fail_regular_gate)
+
+        class _CudaLikeTensor(torch.Tensor):
+            @property
+            def is_cuda(self):
+                return True
+
+        x_cuda_like = x.as_subclass(_CudaLikeTensor)
+        out = ffn(x_cuda_like)
+
+        assert len(calls) == 1
+        assert out.shape == x.shape
+        assert torch.equal(out, torch.zeros_like(x))
+
 
 class TestTimestepEmbedder:
     def test_output_shape(self):

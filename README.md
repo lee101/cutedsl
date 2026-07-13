@@ -16,6 +16,38 @@ Hopefully this project can baloon out into a kind of transformers or ggml style 
 
 Please any help welcome!
 
+## Diffusion Frontier
+
+`diffusion_frontier` is a no-surprises benchmark for comparing public
+text-to-image models on the same hardware. It catalogs Z-Image Turbo, FLUX.1
+Schnell, Proteus v0.2/v0.4, RealVisXL v4, and Krea-2 Turbo; preflights pipeline,
+cache, disk, RAM, and VRAM requirements without downloading; supports standard
+Diffusers LoRAs; records synchronized warm latency and peak VRAM; and emits
+same-model retention metrics plus an opaque human-review manifest.
+
+```bash
+uv pip install -e '.[diffusion]'
+cutedsl-diffusion-frontier --list-models
+cutedsl-diffusion-frontier --preflight --models krea2-turbo flux-schnell realvisxl-v4
+cutedsl-diffusion-frontier --models realvisxl-v4 --allow-download --steps 4 8 20 40
+cutedsl-sdxl-frontier --models realvisxl-v4 --allow-download
+cutedsl-diffusion-frontier --models flux-schnell --offload cuda \
+  --quantization torchao-fp8dq --cache-prompt-embeds --release-text-encoders
+cutedsl-consolidate-frontier /path/to/run-a/results.json /path/to/run-b/results.json
+```
+
+Uncached weights are never downloaded unless `--allow-download` is present.
+Krea-2 currently requires Diffusers from source plus Transformers 5.13 or newer
+in an isolated environment. For a quantized CUDA run with cached prompt
+embeddings, the runner stages Qwen conditioning before loading the resident
+denoiser so the 4B BF16 encoder and 13B FP8 transformer do not compete for a
+32 GB GPU. Pixel metrics are deliberately labeled as same-model retention, not
+cross-model quality; use `review_manifest.json` for blind preference scores.
+The scheduler-aware SDXL runner supports native40, LCM, Hyper-SD, and combined
+style-LoRA profiles. `diffusion_frontier.flow_resume` provides exact same-prompt
+sigma-tail resume for FLUX/Krea; cross-prompt latent reuse remains an explicitly
+quality-gated learned experiment.
+
 # Models
 ## CuteChronos2
 
