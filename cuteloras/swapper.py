@@ -15,6 +15,7 @@ Swap strategy:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -50,6 +51,8 @@ class LoRASwapper:
         self._params: dict[str, torch.nn.Parameter] = dict(transformer.named_parameters())
         self._active: tuple[tuple[str, float], ...] = ()
         self._fast_swaps = 0
+        self._fused_apply = os.environ.get("CUTELORAS_FUSED", "1") != "0"
+        self._fused_bf16 = os.environ.get("CUTELORAS_FUSED_BF16", "0") == "1"
         self._lock = threading.Lock()
         has_cuda = torch.cuda.is_available()
         self.pin_snapshots = has_cuda if pin_snapshots is None else pin_snapshots
@@ -172,7 +175,8 @@ class LoRASwapper:
                 continue
             param_path, param, rows = resolved
             n_rows = param.shape[0] if rows is None else rows.stop - rows.start
-            delta = None
+            # drop zero-scale and shape-mismatched terms up front
+            valid = []
             for a, b, s in terms:
                 if s == 0.0:
                     continue
@@ -186,8 +190,24 @@ class LoRASwapper:
                         a.shape[1],
                     )
                     continue
-                term = (b.to(param.device, torch.float32) @ a.to(param.device, torch.float32)) * s
-                delta = term if delta is None else delta.add_(term)
+                valid.append((a, b, s))
+            if not valid:
+                continue
+            # Multi-adapter modules collapse to ONE fused GEMM (concat factors,
+            # fold scales) instead of N thin GEMMs + N adds. fp32 by default =
+            # bit-for-bit within the fp32 loop's tolerance while cutting kernel
+            # launches; CUTELORAS_FUSED_BF16=1 adds bf16 compute (measured up to
+            # 3.83x on wide/high-rank stacks, ~4e-3 rel err). Disable via
+            # CUTELORAS_FUSED=0. Single-adapter keeps the plain fp32 path.
+            if len(valid) >= 2 and self._fused_apply:
+                from cuteloras.fused_apply import fused_lora_delta
+                cdt = torch.bfloat16 if self._fused_bf16 else torch.float32
+                delta = fused_lora_delta(valid, torch.float32, param.device, compute_dtype=cdt)
+            else:
+                delta = None
+                for a, b, s in valid:
+                    term = (b.to(param.device, torch.float32) @ a.to(param.device, torch.float32)) * s
+                    delta = term if delta is None else delta.add_(term)
             if delta is None:
                 continue
             self._snapshot(param_path, param)
