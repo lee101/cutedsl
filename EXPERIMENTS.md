@@ -19,6 +19,56 @@
 - Diffusers at 512x512 9-step: ~3 it/s on 3090
 - sdcpp GGUF Q3_K with CPU offload: TBD (need to benchmark)
 
+### Served baseline (2026-07-31, images2.netwrck.com, 3090, sdcpp Q8_0)
+
+The omniserve-native art gateway at `:8791`, 1024x1024, 3 steps, cfg 1.0,
+TAEF1 decoder. Step count sweep, two runs each:
+
+| steps | wall clock |
+|-------|-----------|
+| 1     | 1.34s     |
+| 2     | 2.35s     |
+| 3     | 3.37s     |
+| 6     | 6.47s     |
+
+Linear: **~1.03s per transformer step, ~0.31s fixed** (text encode + VAE decode +
+webp). Per-step cost is ~91% of a 3-step request, so step count is the only
+lever worth pulling — shaving the fixed cost cannot pay.
+
+### GGUF quant below Q8_0 is slower, not faster (negative result)
+
+Same prompt grid, seed-matched, per-iteration times straight from sdcpp (so
+HTTP and encode are excluded):
+
+| quant | s/it (median) | VRAM   | note |
+|-------|---------------|--------|------|
+| Q8_0  | **1.02**      | 10.7GB | fastest and best quality |
+| Q4_K  | 1.07          | 8.1GB  | ~5% slower |
+| Q6_K  | 1.20          | 9.4GB  | ~18% slower; **crashed** on the 5th generation |
+
+At batch 1 and 1024x1024 Z-Image is compute-bound, not weight-bandwidth-bound,
+so K-quant dequantisation costs more than the smaller weights save. Q8_0's
+dequant is close to a bare scale, which is why it wins. Q6_K is both the slowest
+and the only one that fell over.
+
+The consequence for the "approximate it with a smaller model" track: the win has
+to come from a genuinely smaller *architecture* (a distilled student, i.e. the
+Track 0 walker) or from fewer real steps. Re-quantising the same 6.15B graph is
+a dead end on this hardware. Do not re-run this sweep expecting a different
+answer without changing the arithmetic, not the storage format.
+
+Two traps this sweep hit, both now fixed, worth knowing before re-running it:
+- `scripts/run-art-zimage.sh` hard-assigned the model path, so an env override
+  was discarded and the first sweep measured Q8_0 three times and reported it as
+  three quants (PSNR inf, SSIM 1.0 — which is the tell).
+- On SIGTERM the gateway closes its listener and frees VRAM *before* it exits, so
+  waiting on the port hands the next block a half-dead predecessor that is still
+  answering `/v1/models`. Wait for the pid, then poll until the served model id
+  is the expected one.
+- Within every block latency creeps monotonically (~1.01 -> 1.05 s/it over ten
+  generations) from clock/thermal drift. Anything under ~8% needs the reference
+  re-measured last, not a single block comparison.
+
 ---
 
 ## Experiment Tracks
