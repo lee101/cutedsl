@@ -34,3 +34,5 @@ examples/lora_frontier/
 examples/chronos_wrappers/*.csv
 cutlass
 .claude
+research/*/experiments/*/out*.png
+research/*/experiments/*/enc_bench
