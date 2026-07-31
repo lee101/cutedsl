@@ -57,6 +57,46 @@ Track 0 walker) or from fewer real steps. Re-quantising the same 6.15B graph is
 a dead end on this hardware. Do not re-run this sweep expecting a different
 answer without changing the arithmetic, not the storage format.
 
+### The sdcpp step caches cannot beat just lowering the step count (negative result)
+
+stable-diffusion.cpp ships `cache_dit.hpp` (EasyCache / UCache / DBCache /
+TaylorSeer / CacheDiT) and the gateway never enabled it. Now wired to
+`OMNISERVE_NATIVE_SD_CACHE` and left **off**, because it loses:
+
+| config                 | steps | median | PSNR vs 20-step ref |
+|------------------------|-------|--------|---------------------|
+| uncached (deployed)    | 3     | 5.81s  | **15.07**           |
+| uncached               | 6     | 11.64s | 17.27               |
+| taylorseer, warmup=1   | 6     | 11.87s | 17.27               |
+| dbcache, warmup=1      | 6     | 8.16s  | **15.12**           |
+| taylorseer, warmup=1   | 10    | 18.73s | 20.25               |
+
+(Absolute times inflated ~40% by thermal throttling late in the run — compare
+within the table only, not against the 3.37s figure above.)
+
+- **DBCache works** and is ~30% faster than uncached at the same step count, but
+  its skipping costs exactly the fidelity the extra steps bought: 6 steps cached
+  lands at PSNR 15.12, statistically the same as 3 steps uncached (15.07), for
+  40% more wall clock. Strictly dominated by just running 3 steps.
+- **TaylorSeer is a no-op on Z-Image in this build** — byte-identical output to
+  uncached at every warmup and skip interval tried, while still paying the
+  bookkeeping. Engaged per the startup banner, so this is the sampler not
+  calling the hook, not a config error.
+- `max_warmup_steps` defaults to **8**, so at 3-6 steps every step is warmup and
+  nothing is ever cached. That is why the first pass showed identical images plus
+  overhead. Any future attempt has to lower it or nothing happens.
+
+Why this should have been predictable: these schemes exploit redundancy between
+adjacent steps, and Turbo is already distilled down to 3 — the redundancy was
+consumed at distillation time. Step-skipping a 3-step schedule has nothing to
+skip. The fidelity ladder (3: 15.07, 6: 17.27, 8: 18.17, 10: 20.25) is real, so
+extra steps do buy quality; they just cannot be had cheaply this way.
+
+Where that leaves the acceleration work: the remaining headroom is not in
+skipping steps of the existing schedule. It is in making each step cheaper
+(kernels, Track 5) or in a smaller student that replaces steps outright
+(Track 0's walker) — not in caching, and not in requantising.
+
 Two traps this sweep hit, both now fixed, worth knowing before re-running it:
 - `scripts/run-art-zimage.sh` hard-assigned the model path, so an env override
   was discarded and the first sweep measured Q8_0 three times and reported it as
