@@ -1,0 +1,12 @@
+# LaTeX build artifacts. The PDF and generated/ are committed on purpose: the
+# PDF so the paper is readable without a TeX install, generated/ so the numbers
+# in the committed PDF can be diffed against the raw results they came from.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
