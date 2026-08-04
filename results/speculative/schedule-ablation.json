@@ -1,0 +1,944 @@
+{
+  "protocol": {
+    "trajectory_dir": "/sdb-disk/latentteleport-spec/trajs-16step-512",
+    "n_trajectories": 200,
+    "n_steps": 16,
+    "folds": 5,
+    "fold_assignment": "sorted trajectory index modulo fold count",
+    "start_step": 2,
+    "end_step_inclusive": 14,
+    "covered_intervals": 12,
+    "max_horizon": 8,
+    "interval_budgets": [
+      3,
+      4,
+      6
+    ],
+    "metric": "mean local relL2 across forecast intervals",
+    "scope": "offline true-anchor schedule proxy; does not simulate accumulated branched sampler error or end-to-end latency"
+  },
+  "summary": {
+    "3": {
+      "methods": {
+        "uniform_taylor1": {
+          "mean": 0.380052,
+          "std": 0.004386
+        },
+        "uniform_scaled": {
+          "mean": 0.270137,
+          "std": 0.008848,
+          "improvement_vs_uniform_taylor_pct": 28.92
+        },
+        "aligned_scaled": {
+          "mean": 0.247837,
+          "std": 0.007589,
+          "improvement_vs_uniform_taylor_pct": 34.79
+        },
+        "top4_staggered_scaled": {
+          "mean": 0.253694,
+          "std": 0.007876,
+          "improvement_vs_uniform_taylor_pct": 33.25
+        }
+      },
+      "selected_schedules": [
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          8,
+          1,
+          3
+        ]
+      ]
+    },
+    "4": {
+      "methods": {
+        "uniform_taylor1": {
+          "mean": 0.332461,
+          "std": 0.004713
+        },
+        "uniform_scaled": {
+          "mean": 0.243101,
+          "std": 0.008392,
+          "improvement_vs_uniform_taylor_pct": 26.88
+        },
+        "aligned_scaled": {
+          "mean": 0.214969,
+          "std": 0.006683,
+          "improvement_vs_uniform_taylor_pct": 35.34
+        },
+        "top4_staggered_scaled": {
+          "mean": 0.220051,
+          "std": 0.007054,
+          "improvement_vs_uniform_taylor_pct": 33.81
+        }
+      },
+      "selected_schedules": [
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          8,
+          1,
+          1,
+          2
+        ]
+      ]
+    },
+    "6": {
+      "methods": {
+        "uniform_taylor1": {
+          "mean": 0.279801,
+          "std": 0.004973
+        },
+        "uniform_scaled": {
+          "mean": 0.2123,
+          "std": 0.007898,
+          "improvement_vs_uniform_taylor_pct": 24.12
+        },
+        "aligned_scaled": {
+          "mean": 0.188443,
+          "std": 0.006108,
+          "improvement_vs_uniform_taylor_pct": 32.65
+        },
+        "top4_staggered_scaled": {
+          "mean": 0.190303,
+          "std": 0.006336,
+          "improvement_vs_uniform_taylor_pct": 31.99
+        }
+      },
+      "selected_schedules": [
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      ]
+    }
+  },
+  "fold_rows": [
+    {
+      "fold": 0,
+      "forecast_intervals": 3,
+      "uniform_schedule": [
+        4,
+        4,
+        4
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        3
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          7,
+          1,
+          4
+        ],
+        [
+          8,
+          2,
+          2
+        ],
+        [
+          7,
+          2,
+          3
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.385418,
+        "uniform_scaled": 0.278543,
+        "aligned_scaled": 0.253868,
+        "top4_staggered_scaled": 0.260092
+      }
+    },
+    {
+      "fold": 0,
+      "forecast_intervals": 4,
+      "uniform_schedule": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        1,
+        2
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          1,
+          3
+        ],
+        [
+          7,
+          2,
+          1,
+          2
+        ],
+        [
+          6,
+          2,
+          1,
+          3
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.338413,
+        "uniform_scaled": 0.251988,
+        "aligned_scaled": 0.220126,
+        "top4_staggered_scaled": 0.225939
+      }
+    },
+    {
+      "fold": 0,
+      "forecast_intervals": 6,
+      "uniform_schedule": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "selected_schedule": [
+        7,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "top4_schedules": [
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          6,
+          1,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          5,
+          2,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          6,
+          2,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.285985,
+        "uniform_scaled": 0.220753,
+        "aligned_scaled": 0.193182,
+        "top4_staggered_scaled": 0.195671
+      }
+    },
+    {
+      "fold": 1,
+      "forecast_intervals": 3,
+      "uniform_schedule": [
+        4,
+        4,
+        4
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        3
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          7,
+          1,
+          4
+        ],
+        [
+          8,
+          2,
+          2
+        ],
+        [
+          7,
+          2,
+          3
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.379025,
+        "uniform_scaled": 0.265653,
+        "aligned_scaled": 0.242728,
+        "top4_staggered_scaled": 0.248475
+      }
+    },
+    {
+      "fold": 1,
+      "forecast_intervals": 4,
+      "uniform_schedule": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        1,
+        2
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          1,
+          3
+        ],
+        [
+          7,
+          2,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          2,
+          2
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.331384,
+        "uniform_scaled": 0.239074,
+        "aligned_scaled": 0.210226,
+        "top4_staggered_scaled": 0.215304
+      }
+    },
+    {
+      "fold": 1,
+      "forecast_intervals": 6,
+      "uniform_schedule": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "selected_schedule": [
+        7,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "top4_schedules": [
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          6,
+          1,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          5,
+          2,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          6,
+          2,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.278288,
+        "uniform_scaled": 0.2086,
+        "aligned_scaled": 0.184029,
+        "top4_staggered_scaled": 0.186187
+      }
+    },
+    {
+      "fold": 2,
+      "forecast_intervals": 3,
+      "uniform_schedule": [
+        4,
+        4,
+        4
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        3
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          7,
+          1,
+          4
+        ],
+        [
+          8,
+          2,
+          2
+        ],
+        [
+          7,
+          2,
+          3
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.374526,
+        "uniform_scaled": 0.258959,
+        "aligned_scaled": 0.238611,
+        "top4_staggered_scaled": 0.244166
+      }
+    },
+    {
+      "fold": 2,
+      "forecast_intervals": 4,
+      "uniform_schedule": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        1,
+        2
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          1,
+          3
+        ],
+        [
+          7,
+          2,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          2,
+          2
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.326775,
+        "uniform_scaled": 0.232922,
+        "aligned_scaled": 0.206735,
+        "top4_staggered_scaled": 0.211381
+      }
+    },
+    {
+      "fold": 2,
+      "forecast_intervals": 6,
+      "uniform_schedule": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "selected_schedule": [
+        7,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "top4_schedules": [
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          6,
+          1,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          5,
+          2,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          6,
+          2,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.273838,
+        "uniform_scaled": 0.20267,
+        "aligned_scaled": 0.180992,
+        "top4_staggered_scaled": 0.182421
+      }
+    },
+    {
+      "fold": 3,
+      "forecast_intervals": 3,
+      "uniform_schedule": [
+        4,
+        4,
+        4
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        3
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          7,
+          1,
+          4
+        ],
+        [
+          8,
+          2,
+          2
+        ],
+        [
+          7,
+          2,
+          3
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.38346,
+        "uniform_scaled": 0.279728,
+        "aligned_scaled": 0.256904,
+        "top4_staggered_scaled": 0.263081
+      }
+    },
+    {
+      "fold": 3,
+      "forecast_intervals": 4,
+      "uniform_schedule": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        1,
+        2
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          1,
+          3
+        ],
+        [
+          7,
+          2,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          2,
+          2
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.335999,
+        "uniform_scaled": 0.251624,
+        "aligned_scaled": 0.222827,
+        "top4_staggered_scaled": 0.228192
+      }
+    },
+    {
+      "fold": 3,
+      "forecast_intervals": 6,
+      "uniform_schedule": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "selected_schedule": [
+        7,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "top4_schedules": [
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          6,
+          1,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          5,
+          2,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          6,
+          2,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.283764,
+        "uniform_scaled": 0.220203,
+        "aligned_scaled": 0.195637,
+        "top4_staggered_scaled": 0.197538
+      }
+    },
+    {
+      "fold": 4,
+      "forecast_intervals": 3,
+      "uniform_schedule": [
+        4,
+        4,
+        4
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        3
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          3
+        ],
+        [
+          7,
+          1,
+          4
+        ],
+        [
+          8,
+          2,
+          2
+        ],
+        [
+          7,
+          2,
+          3
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.377829,
+        "uniform_scaled": 0.267804,
+        "aligned_scaled": 0.247072,
+        "top4_staggered_scaled": 0.252657
+      }
+    },
+    {
+      "fold": 4,
+      "forecast_intervals": 4,
+      "uniform_schedule": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "selected_schedule": [
+        8,
+        1,
+        1,
+        2
+      ],
+      "top4_schedules": [
+        [
+          8,
+          1,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          1,
+          3
+        ],
+        [
+          7,
+          2,
+          1,
+          2
+        ],
+        [
+          7,
+          1,
+          2,
+          2
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.329735,
+        "uniform_scaled": 0.239899,
+        "aligned_scaled": 0.214933,
+        "top4_staggered_scaled": 0.219438
+      }
+    },
+    {
+      "fold": 4,
+      "forecast_intervals": 6,
+      "uniform_schedule": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "selected_schedule": [
+        7,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "top4_schedules": [
+        [
+          7,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          6,
+          1,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          5,
+          2,
+          1,
+          1,
+          1,
+          2
+        ],
+        [
+          6,
+          2,
+          1,
+          1,
+          1,
+          1
+        ]
+      ],
+      "test_rel_l2": {
+        "uniform_taylor1": 0.277132,
+        "uniform_scaled": 0.209276,
+        "aligned_scaled": 0.188374,
+        "top4_staggered_scaled": 0.189696
+      }
+    }
+  ]
+}

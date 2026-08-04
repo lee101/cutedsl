@@ -165,6 +165,17 @@ def forecaster_ablation() -> dict:
     }
 
 
+def schedule_ablation() -> dict:
+    """Five-fold offline anchor-placement ablation."""
+    raw = load_json(RESULTS / "schedule-ablation.json")
+    if not raw:
+        return {}
+    return {
+        "protocol": raw.get("protocol", {}),
+        "summary": raw.get("summary", {}),
+    }
+
+
 def tex_escape(text: str) -> str:
     return text.replace("_", r"\_").replace("%", r"\%").replace("&", r"\&")
 
@@ -230,6 +241,32 @@ def write_tables(data: dict, out_dir: Path) -> None:
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_forecaster_ablation.tex").write_text("\n".join(lines) + "\n")
 
+    schedule = data.get("schedule", {}).get("summary", {})
+    lines = [
+        r"\begin{tabular}{@{}crrrrr@{}}",
+        r"\toprule",
+        r"intervals & uniform Taylor & uniform calibrated & aligned calibrated & four staggered & selected horizons \\",
+        r"\midrule",
+    ]
+    for budget in sorted(schedule, key=int):
+        row = schedule[budget]
+        methods = row["methods"]
+        scores = []
+        for method in (
+            "uniform_taylor1",
+            "uniform_scaled",
+            "aligned_scaled",
+            "top4_staggered_scaled",
+        ):
+            value = methods[method]
+            scores.append(f"{value['mean']:.3f}$\\pm${value['std']:.3f}")
+        selected = row.get("selected_schedules", [])
+        unique = {tuple(values) for values in selected}
+        schedule_text = "--".join(map(str, next(iter(unique)))) if len(unique) == 1 else "varies"
+        lines.append(f"{budget} & {' & '.join(scores)} & {schedule_text} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_schedule_ablation.tex").write_text("\n".join(lines) + "\n")
+
     # Macros so prose can cite a number without anyone retyping it.
     macros = []
     k3 = e2e.get(3, {})
@@ -259,6 +296,26 @@ def write_tables(data: dict, out_dir: Path) -> None:
     macros.append(r"\newcommand{\DegenerateRelLTwo}{%s \times 10^{%d}}"
                   % (mantissa, int(exponent)))
     macros.append(r"\newcommand{\DegenerateStep}{%s}" % deg[0].get("t", "?"))
+    forecaster_summary = data.get("forecaster", {}).get("summary", {})
+    if "8" in forecaster_summary:
+        long_methods = forecaster_summary["8"]["methods"]
+        macros.append(
+            r"\newcommand{\LongHorizonImprovement}{%.1f\%%}"
+            % long_methods["scaled_momentum"]["improvement_vs_taylor_pct"]
+        )
+    schedule_summary = data.get("schedule", {}).get("summary", {})
+    if "4" in schedule_summary:
+        schedule_methods = schedule_summary["4"]["methods"]
+        aligned = schedule_methods["aligned_scaled"]
+        staggered = schedule_methods["top4_staggered_scaled"]
+        macros.append(r"\newcommand{\AlignedFourRelLTwo}{%.3f}" % aligned["mean"])
+        macros.append(
+            r"\newcommand{\AlignedFourImprovement}{%.1f\%%}"
+            % aligned["improvement_vs_uniform_taylor_pct"]
+        )
+        staggered_gap = 100.0 * (staggered["mean"] / aligned["mean"] - 1.0)
+        macros.append(r"\newcommand{\StaggeredFourRelLTwo}{%.3f}" % staggered["mean"])
+        macros.append(r"\newcommand{\StaggeredGap}{%.1f\%%}" % staggered_gap)
     (out_dir / "macros.tex").write_text("\n".join(macros) + "\n")
 
 
@@ -272,6 +329,7 @@ def main() -> int:
         "gap": gap_table(),
         "train": train_table(),
         "forecaster": forecaster_ablation(),
+        "schedule": schedule_ablation(),
     }
     out_dir = Path(args.out)
     write_tables(data, out_dir)
@@ -279,7 +337,8 @@ def main() -> int:
 
     print(
         f"wrote {out_dir}/table_e2e.tex, table_gap.tex, "
-        "table_forecaster_ablation.tex, macros.tex, analysis.json"
+        "table_forecaster_ablation.tex, table_schedule_ablation.tex, "
+        "macros.tex, analysis.json"
     )
     for k, e in sorted(data["e2e"].items()):
         print(f"  k={k}: reported {e['reported_mean_speedup_spec']}x -> corrected "

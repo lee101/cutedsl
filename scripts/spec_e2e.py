@@ -4,6 +4,7 @@ Compares wall-clock and image similarity (PSNR + latent relL2) of:
   baseline   all N steps real
   identity   real steps only at anchors, drafts skipped with no correction
   spec       walker rollout + interpolator teleport between real steps
+  scaled     schedule-calibrated momentum teleport
 
 Run: .venv/bin/python scripts/spec_e2e.py --steps 16 --draft-k 3 --n 6
 """
@@ -31,6 +32,7 @@ from latentteleport.speculative import (  # noqa: E402
 )
 
 BASE = Path("/sdb-disk/latentteleport-spec")
+REPO = Path(__file__).resolve().parent.parent
 MODEL = "Tongyi-MAI/Z-Image-Turbo"
 
 PROMPTS = [
@@ -48,6 +50,20 @@ def psnr(a, b):
     b = np.asarray(b, dtype=np.float32) / 255.0
     mse = ((a - b) ** 2).mean()
     return 99.0 if mse == 0 else float(-10 * np.log10(mse))
+
+
+def load_momentum_scales(path: Path, steps: int) -> dict[tuple[int, int], float]:
+    raw = json.loads(path.read_text())
+    fitted_steps = int(raw.get("protocol", {}).get("n_steps", -1))
+    if fitted_steps != steps:
+        raise ValueError(
+            f"momentum scales were fit for {fitted_steps} steps, requested {steps}; "
+            "collect and fit trajectories for the requested schedule first"
+        )
+    return {
+        (int(row["step"]), int(row["draft_k"])): float(row["momentum_scale"])
+        for row in raw.get("deployment_coefficients", [])
+    }
 
 
 @torch.no_grad()
@@ -68,7 +84,23 @@ def main():
     ap.add_argument("--cute", action="store_true", help="cutezimage accelerated transformer for real steps")
     ap.add_argument("--compile-nets", action="store_true", help="torch.compile walker+interp (reduce-overhead)")
     ap.add_argument("--offload", action="store_true", help="cpu-offload pipeline modules (shared-GPU safety)")
+    ap.add_argument(
+        "--modes",
+        nargs="+",
+        choices=("spec", "taylor", "scaled", "skip"),
+        default=("spec", "taylor", "scaled", "skip"),
+    )
+    ap.add_argument(
+        "--momentum-scales",
+        type=Path,
+        default=REPO / "results/speculative/forecaster-ablation.json",
+    )
     args = ap.parse_args()
+    momentum_scales = (
+        load_momentum_scales(args.momentum_scales, args.steps)
+        if "scaled" in args.modes
+        else None
+    )
 
     if args.cute:
         from cutezimage.pipeline import get_zimage_pipelines
@@ -99,29 +131,35 @@ def main():
 
     rows = []
     for i, prompt in enumerate(PROMPTS[: args.n]):
-        torch.cuda.synchronize(); t0 = time.time()
+        torch.cuda.synchronize()
+        t0 = time.time()
         img_base, lat_base = baseline(pipe, prompt, args.steps, args.size, seed=7)
-        torch.cuda.synchronize(); t_base = time.time() - t0
+        torch.cuda.synchronize()
+        t_base = time.time() - t0
 
         row = {"prompt": prompt[:40], "t_baseline": round(t_base, 2)}
         img_base[0].save(out_dir / f"{i}_base.png")
-        for mode in ("spec", "taylor", "skip"):
+        for mode in args.modes:
             t0 = time.time()
             img_m, stats = speculative_denoise(
                 pipe, prompt, walker, interp, total_steps=args.steps, draft_k=args.draft_k,
                 height=args.size, width=args.size, seed=7, mode=mode,
+                momentum_scales=momentum_scales,
             )
-            torch.cuda.synchronize(); t_m = time.time() - t0
+            torch.cuda.synchronize()
+            t_m = time.time() - t0
             row[f"t_{mode}"] = round(t_m, 2)
             row[f"speedup_{mode}"] = round(t_base / t_m, 2)
             row[f"psnr_{mode}"] = round(psnr(img_base[0], img_m[0]), 2)
             row["big_steps"] = stats["big_steps"]
+            if mode == "scaled":
+                row["scale_fallbacks_scaled"] = stats["scale_fallbacks"]
             img_m[0].save(out_dir / f"{i}_{mode}.png")
         rows.append(row)
         print(row, flush=True)
 
     summary = {"steps": args.steps, "draft_k": args.draft_k, "rows": rows}
-    for mode in ("spec", "taylor", "skip"):
+    for mode in args.modes:
         summary[f"mean_speedup_{mode}"] = round(sum(r[f"speedup_{mode}"] for r in rows) / len(rows), 2)
         summary[f"mean_psnr_{mode}"] = round(sum(r[f"psnr_{mode}"] for r in rows) / len(rows), 2)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=1))

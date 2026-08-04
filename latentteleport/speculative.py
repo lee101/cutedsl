@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Mapping
 
 import torch
 import torch.nn as nn
@@ -130,6 +131,39 @@ def taylor1(x_t, x_prev, k: int):
     return x_t + k * (x_t - x_prev)
 
 
+def scaled_momentum(x_t, x_prev, k: int, scale: float):
+    """Schedule-calibrated first-order trajectory forecast."""
+    return x_t + scale * k * (x_t - x_prev)
+
+
+def build_active_lane_plan(
+    schedules: list[list[int]] | tuple[tuple[int, ...], ...],
+    start_step: int = 0,
+) -> list[tuple[int, tuple[int, ...]]]:
+    """Group lane-specific anchor endpoints into compact denoiser events.
+
+    Every horizon must be positive and every lane must cover the same total
+    span, so the lanes reconverge at a shared final anchor.  The returned lane
+    ids can be passed to ``index_select`` before a compact transformer call and
+    scattered back into the full latent batch afterwards.
+    """
+    if not schedules:
+        return []
+    totals = {sum(schedule) for schedule in schedules}
+    if len(totals) != 1:
+        raise ValueError("lane schedules must cover the same total span")
+    if any(not schedule or any(horizon <= 0 for horizon in schedule) for schedule in schedules):
+        raise ValueError("lane schedules must contain positive horizons")
+
+    events: dict[int, list[int]] = {}
+    for lane, schedule in enumerate(schedules):
+        step = start_step
+        for horizon in schedule:
+            step += horizon
+            events.setdefault(step, []).append(lane)
+    return [(step, tuple(lanes)) for step, lanes in sorted(events.items())]
+
+
 @torch.no_grad()
 def zimage_prepare(pipe, prompt: str, total_steps: int, height: int, width: int, seed: int, device: str = "cuda"):
     """Encode prompt + prepare latents + full-schedule timesteps, mirroring
@@ -182,14 +216,20 @@ def speculative_denoise(
     width: int = 512,
     seed: int = 0,
     device: str = "cuda",
-    mode: str = "spec",  # spec | taylor | skip
+    mode: str = "spec",  # spec | taylor | scaled | skip
+    momentum_scales: Mapping[tuple[int, int], float] | None = None,
 ):
     """Manual denoise on the FULL schedule, but every real step is followed by
     draft_k teleported steps — those transformer calls are skipped entirely.
     mode=spec: walker rollout + interpolator; taylor: x + k*(x - x_prev_real);
+    scaled: schedule-calibrated Taylor using momentum_scales[(anchor_step, k)];
     skip: no correction. Last step is always real."""
+    if mode not in {"spec", "taylor", "scaled", "skip"}:
+        raise ValueError(f"unknown speculative mode: {mode}")
+    if mode == "scaled" and momentum_scales is None:
+        raise ValueError("scaled mode requires fitted momentum_scales")
     prompt_embeds, latents, timesteps = zimage_prepare(pipe, prompt, total_steps, height, width, seed, device)
-    stats = {"big_steps": 0, "drafted_steps": 0}
+    stats = {"big_steps": 0, "drafted_steps": 0, "scale_fallbacks": 0}
     i = 0
     n = len(timesteps)
     while i < n:
@@ -207,6 +247,15 @@ def speculative_denoise(
                 latents = interp(latents.float(), delta, drafts[-1], tf, kf).to(torch.float32)
             elif mode == "taylor":
                 latents = latents + k * (latents - before)
+            elif mode == "scaled":
+                # Stored trajectory step 0 is the latent after denoiser call 0,
+                # while i is the number of consumed timesteps here.
+                anchor_step = i - 1
+                scale_key = (anchor_step, k)
+                if scale_key not in momentum_scales:
+                    stats["scale_fallbacks"] += 1
+                scale = momentum_scales.get(scale_key, 1.0)
+                latents = scaled_momentum(latents, before, k, scale)
             if hasattr(pipe.scheduler, "_step_index") and pipe.scheduler._step_index is not None:
                 pipe.scheduler._step_index += k
             stats["drafted_steps"] += k

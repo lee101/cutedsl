@@ -51,8 +51,11 @@ designs until they receive the same controlled image evaluation.
 
 The main result has two parts. First, the signal is real: diffusion trajectories
 are highly forecastable, and a schedule-calibrated momentum rule reduces
-held-out trajectory error by 20--33\% over first-order Taylor across horizons
-$k=1\ldots4$. Across the 36 evaluated learned and Taylor image candidates, an
+held-out trajectory error by 20--37\% over first-order Taylor across horizons
+$k=1\ldots8$. An independent anchor-placement search further reduces a
+four-interval trajectory proxy to \relltwo{} $=\AlignedFourRelLTwo$, a
+\AlignedFourImprovement{} improvement over uniform Taylor. Across the 36
+evaluated learned and Taylor image candidates, an
 author screen finds that every output retains the requested subject or scene;
 the visible trade is increasing layout and texture drift as $k$ grows. Second,
 the present serving point does not yet turn fewer denoiser calls into a large
@@ -67,8 +70,8 @@ We further report that our first analysis of these same runs claimed
 $\ReportedSpeedupKThree\times$, and that this figure was an artifact of an
 un-warmed first iteration whose baseline took $\WarmupBaseline$\,s against a
 $\MedianBaseline$\,s median. We give the corrected protocol, a reproducible
-analysis harness, five-fold forecaster ablations, draft-length and routing
-ablations, three grids
+analysis harness, five-fold forecaster and aligned-schedule ablations,
+draft-length and routing ablations, three grids
 containing the actual generated images across six prompt/style slices, an
 account of how the method extends to swarms of LoRA adapters with disjoint
 embedding spaces, and deployment recommendations grounded in the measured
@@ -105,8 +108,10 @@ forecastability signal to become useful serving latency.
 
 \subsection*{What latent teleportation is --- and is not}
 
-The name describes a family of approximate trajectory shortcuts, not one fixed
-algorithm and not an exact analogue of language-model speculative decoding.
+The name describes a family of approximate trajectory shortcuts: estimate a
+local tangent or transport map, then warp a latent along the learned manifold to
+a later refinement state. It is not one fixed algorithm and not an exact
+analogue of language-model speculative decoding.
 
 \begin{center}
 \small
@@ -114,8 +119,8 @@ algorithm and not an exact analogue of language-model speculative decoding.
 \toprule
 \textbf{What it is} & \textbf{What it is not} \\
 \midrule
-A forecast or warm start in a continuous diffusion latent trajectory. & An exact verifier or a distribution-preserving decoding method. \\
-A family that can use momentum, learned predictors, confidence gates, or retrieved trajectories. & A claim that every listed mechanism has already passed image and latency evaluation. \\
+A forecast, manifold warp, or warm start in a continuous diffusion latent trajectory. & An exact verifier or a distribution-preserving decoding method. \\
+A family that can use momentum, aligned schedules, learned predictors, confidence gates, or retrieved trajectories. & A claim that every listed mechanism has already passed image and latency evaluation. \\
 A controllable trade between denoiser calls and same-seed image retention. & A guarantee of end-to-end speedup when text, VAE, transfer, or scheduling costs dominate. \\
 A model--serving co-design problem whose useful operating point can change with resolution, schedule, and batching. & A single checkpoint-specific result that should be extrapolated to every sampler or deployment. \\
 \bottomrule
@@ -129,9 +134,14 @@ A model--serving co-design problem whose useful operating point can change with 
     Taylor and scalar-affine predictors, establishing that the trajectory is
     genuinely forecastable and quantifying where (Section~\ref{sec:gap}).
   \item \textbf{A five-fold forecaster ablation} showing that one fitted
-    schedule scalar improves over raw Taylor by 20--33\%, while an extra
+    schedule scalar improves over raw Taylor by 20--37\% through $k=8$, while an extra
     historical delta adds little and an unfitted second-order rule is worse
     (Section~\ref{sec:calibration}).
+  \item \textbf{A call-budget schedule ablation} connecting trajectory
+    forecasting to Align Your Steps: four cross-validated forecast intervals improve
+    local forecast error by \AlignedFourImprovement{}, while four staggered
+    near-optimal schedules remain within \StaggeredGap{} of the best
+    (Section~\ref{sec:aligned-schedule}).
   \item \textbf{Two evaluated acceleration mechanisms} --- speculative latent
     walking with a learned gap interpolator and fixed-horizon Taylor forecasting
     --- plus clearly separated designs for confidence gating and $k$-NN cache
@@ -172,9 +182,35 @@ denoiser inside $\Phi$, plus one text encode and one VAE decode.
 Progressive distillation \citep{salimans2022progressive}, consistency models
 \citep{song2023consistency}, latent consistency models \citep{luo2023lcm} and
 adversarial distillation \citep{sauer2023adversarial} all produce a new
-checkpoint that needs fewer steps. These are the strongest known accelerations
-and are orthogonal to our work; Z-Image Turbo is already a few-step model, which
+checkpoint that needs fewer steps. LCMs explicitly target high-resolution
+generation in two to four steps; this is powerful but consumes the very
+redundancy that a post-training skip method would otherwise exploit. The
+combination is therefore role-dependent: a consistency model can serve as a
+cheap endpoint proposer or training target, while teleportation can target a
+longer high-quality teacher schedule. Z-Image Turbo is already distilled, which
 matters for interpreting our results (Section~\ref{sec:limitations}).
+
+\paragraph{Schedule optimisation.}
+Align Your Steps (AYS) \citep{sabour2024align} optimises the sampling timesteps
+for a chosen model, dataset, and stochastic solver by minimising a bound on the
+mismatch between a locally linearised and true reverse process. It asks
+\emph{where} expensive evaluations should occur. Latent teleportation asks
+\emph{what state should fill the interval between them}. These decisions are
+complementary, and Section~\ref{sec:aligned-schedule} measures their joint
+offline proxy rather than assuming uniform skips.
+
+\paragraph{Flow matching, straightening, and reflow.}
+Flow matching can train vector fields along diffusion or optimal-transport
+probability paths; the latter are straighter and admit efficient ODE sampling
+\citep{lipman2023flow}. Rectified flow and reflow make this connection
+operational by straightening noise-to-data trajectories, which in turn eases
+few-step distillation \citep{liu2023rectified,liu2024instaflow}. This is the
+geometry latent teleportation tries to exploit after training: straighter paths
+make a local tangent valid for longer, while schedule calibration absorbs the
+remaining non-uniform speed. Reflow changes the model; teleportation can be
+fitted to a frozen model. Combining them should improve predictability, but
+must be re-measured because a successfully straightened few-step model also
+leaves fewer calls to remove.
 
 \paragraph{Training-free caching.}
 DeepCache \citep{ma2024deepcache} reuses U-Net skip features across adjacent
@@ -248,6 +284,36 @@ committing to the whole step if that forecast lands: a cheap partial computation
 acts as a proxy for whether the expensive full computation can be skipped. The
 end-to-end Taylor arm reported below uses fixed $k$ and does not activate this
 gate; we therefore treat confidence gating as unvalidated system design.
+
+\subsection{Aligned anchors and selective batch lanes}
+
+A constant $k$ assumes that equal scheduler-index gaps are equally easy to
+forecast. They are not. We separate the decision into an anchor schedule
+$A=(a_0,\ldots,a_m)$ and a transport rule $T$:
+\begin{equation}
+  \tilde{x}_{a_{j+1}} =
+  T(x_{a_j},x_{a_j-1},c,a_j,a_{j+1}-a_j).
+\end{equation}
+AYS motivates choosing the anchors non-uniformly; our calibrated transport uses
+an empirical per-step, per-horizon speed correction. A retrieved neighbour can
+further supply a local tangent or curvature estimate, so similar historical
+trajectories adjust both the direction of the warp and the next point at which
+the big model should refine it. This is better understood as moving within a
+local chart of the latent manifold than as copying a cached image.
+
+For a batch of $B$ outputs, the schedule can be lane-specific:
+$A^{(1)},\ldots,A^{(B)}$. At a global scheduler event, lanes requiring a real
+update are compacted into an active microbatch; the remaining lanes advance
+with $T$. Different noise seeds already provide ordinary batch diversity.
+Lane-specific neighbours, horizons, and bounded residual perturbations add
+\emph{structured} variation without requiring every lane to take every
+denoiser call. This saves work only if the active-lane compaction costs less than
+the removed transformer rows; issuing a full batch and masking its outputs saves
+nothing. The released code includes the deterministic event planner that groups
+lane endpoints into compact denoiser microbatches; the GPU gather/transformer/
+scatter path remains to be benchmarked. Section~\ref{sec:production-use-cases} gives the production protocol,
+while Section~\ref{sec:aligned-schedule} measures only the offline schedule
+proxy.
 
 \subsection{Latent teleportation from a trajectory cache}
 
@@ -326,12 +392,18 @@ saved RGB PNGs. Both are reference-similarity metrics rather than measures of
 prompt adherence or aesthetic quality. Wall clock is measured with CUDA
 synchronisation around each arm.
 
+\begin{sloppypar}
 \paragraph{Reproducibility.} Timing and latent-forecast numbers are emitted by
-\texttt{paper\_analysis.py} from raw result JSON. Image tables and grids are
-emitted by \texttt{paper\_ablation\_grids.py} from the 72 saved PNGs.
+\path{scripts/paper_analysis.py} from raw result JSON.
+\path{scripts/spec_forecaster_ablation.py} fits and cross-validates horizons through
+$k=8$ and emits full-schedule deployment coefficients;
+\path{scripts/spec_schedule_ablation.py} searches anchor compositions under fixed
+budgets. Image tables and grids are
+emitted by \path{scripts/paper_ablation_grids.py} from the 72 saved PNGs.
 The latter writes a manifest containing the SHA-256 digest, prompt index,
 method, $k$, PSNR, and SSIM for every source panel. No panel is synthesized or
 retouched; grid construction is limited to resizing, borders, and labels.
+\end{sloppypar}
 
 \section{Results}
 
@@ -407,14 +479,56 @@ two-delta fits two. No image pixels or timing labels enter the fit.}
 \end{table}
 
 Table~\ref{tab:forecaster-ablation} gives a constructive tuning result. Scaled
-momentum reduces error by 20--33\% relative to first-order Taylor, and the
-two-delta fit reduces it by 22--34\%. The second delta contributes only a small
-increment, making the one-scalar rule the better first deployment candidate.
+momentum reduces error by 20--37\% relative to first-order Taylor across
+$k=1\ldots8$, with the largest relative gain at $k=8$
+(\LongHorizonImprovement{}). The two-delta fit remains only marginally better:
+at $k=8$ it reaches 0.327 against 0.330 for one scalar. The second delta
+therefore contributes little even at long horizons, making the one-scalar rule
+the better first deployment candidate.
 Average velocity and raw second-order Taylor are both worse than first order:
 more history or a higher expansion order is not automatically better unless it
 is calibrated to the schedule. This is a held-out latent-level result, not yet
 an image-quality or latency claim; the next image sweep should promote scaled
 momentum alongside the existing Taylor reference.
+
+\subsection{Aligning anchors improves a fixed interval budget}
+\label{sec:aligned-schedule}
+
+We next hold the number of forecast intervals fixed and search their integer
+horizons. The proxy covers recorded steps 2 through 14, excluding the duplicated
+final latent. For each outer fold, coefficients and a schedule are selected on
+four folds and evaluated on the fifth. Each interval starts from its recorded
+true anchor; the experiment therefore measures local anchor placement and does
+not simulate error accumulated by a branched sampler.
+
+\begin{table}[ht]
+\centering
+\scriptsize
+\input{generated/table_schedule_ablation}
+\caption{Five-fold anchor-schedule ablation. The budget counts forecast
+intervals, not denoiser calls. Entries are mean local
+\relltwo{} $\pm$ standard deviation. Four staggered reports the mean of the four
+best distinct training-fold schedules, modelling four batch lanes. Selected
+horizons are stable across all five folds. Lower is better.}
+\label{tab:schedule-ablation}
+\end{table}
+
+Table~\ref{tab:schedule-ablation} separates two gains. With four intervals,
+calibration alone improves uniform scheduling from 0.332 to 0.243. Aligning the
+same interval budget further improves it to
+\AlignedFourRelLTwo{}---\AlignedFourImprovement{} below uniform Taylor and
+about 12\% below uniform calibrated momentum. Every fold selects
+$[8,1,1,2]$: one long early warp followed by dense late corrections. That
+pattern is consistent with a rectified-flow path that is relatively straight
+early but becomes more sensitive as image details settle; it is an empirical
+result for this schedule, not a universal timetable.
+
+The four best distinct schedules average \StaggeredFourRelLTwo{}, only
+\StaggeredGap{} above the single best schedule. This is the first quantitative
+support for staggered batch lanes: four outputs can use different anchor
+patterns with little latent-proxy penalty. It does not yet establish either
+decoded-image diversity or GPU speedup; both require active-lane compaction and
+the image protocol in Section~\ref{sec:production-use-cases}.
 
 \subsection{End-to-end: locating the remaining latency}
 \label{sec:e2e}
@@ -608,9 +722,15 @@ The ablations define a focused next tuning loop.
     $\PsnrTaylorKOne$\,dB PSNR, with no learned checkpoint or extra model
     allocation.
   \item \textbf{Promote schedule-calibrated momentum into the next image
-    sweep.} Its five-fold trajectory error is 20--33\% below raw Taylor and it
+    sweep.} Its five-fold trajectory error is 20--37\% below raw Taylor through
+    $k=8$ and it
     captures nearly all of the benefit of the more complex two-delta fit. Test
-    it at $k=1,2,3$ with the same seeds before claiming an image-level gain.
+    both uniform and aligned horizons with the same seeds before claiming an
+    image-level gain.
+  \item \textbf{Use aligned rather than uniform anchors.} At a four-interval
+    budget, schedule search contributes an additional 12\% latent-proxy
+    improvement beyond calibration. Refit the timetable for every model,
+    resolution, solver, and step count rather than copying $[8,1,1,2]$.
   \item \textbf{Align learned training with the output metric.} Save the best
     validation checkpoint and add decoded perceptual or preference supervision;
     the present relative-L2 objective improves latent error without beating the
@@ -631,6 +751,89 @@ The ablations define a focused next tuning loop.
     saved denoiser calls enough share of total time to matter.
 \end{enumerate}
 
+\section{Production Use Cases and Composability}
+\label{sec:production-use-cases}
+
+\subsection{Thirty-step quality at approximately four-call speed}
+
+The production objective is not merely to make a native four-step sample; it is
+to approach the quality of a 30-step teacher while paying for approximately
+four large-denoiser evaluations. We treat this as the next acceptance target,
+not as a result already established by the 16-step study. The experiment should
+capture full 30-step trajectories for multiple prompts and seeds, fit
+schedule-specific momentum and neighbour-transport parameters, choose four
+anchors on training folds, and then run a genuinely branched sampler on held-out
+prompts. Capture must include the initial pre-denoiser noise latent, which the
+current callback-only 16-step store omits, so the first warp can be calibrated
+rather than falling back to raw Taylor.
+
+Three references are required: native four-step generation, the full 30-step
+teacher, and four-call teleportation from the same initial noise. A candidate
+passes only if (i) denoiser calls and both denoiser-only and end-to-end latency
+are reported; (ii) every decoded panel is screened for collapse; (iii) PSNR,
+SSIM, and a perceptual metric quantify teacher retention; and (iv) blinded
+preference and prompt-adherence evaluation cannot distinguish it materially
+from the 30-step quality mode. A high PSNR alone is not the goal: a useful
+system may produce a different, equally strong composition.
+
+The training objective should likewise combine endpoint consistency with
+decoded perceptual supervision:
+\begin{equation}
+  \mathcal{L} =
+  \lambda_z \lVert \tilde{x}_{a_{j+1}}-x_{a_{j+1}}\rVert_2^2
+  + \lambda_p \mathcal{L}_{\mathrm{perc}}(D(\tilde{x}),D(x))
+  + \lambda_c \mathcal{L}_{\mathrm{consistency}},
+\end{equation}
+where $D$ is the VAE decoder. This connects the walker to consistency
+distillation without requiring the production denoiser itself to be replaced.
+
+\subsection{Four varied images with selective refinement}
+
+A common serving request generates four candidates for one prompt. Text
+encoding, model residency, and launch overhead are already shared, while four
+independent noise seeds provide baseline diversity. Latent teleportation adds a
+controlled axis: assign each lane a different high-ranking anchor schedule and,
+when available, a different compatible cached-neighbour prior. The four
+near-optimal schedules in Table~\ref{tab:schedule-ablation} cost only
+\StaggeredGap{} more latent error than the best single schedule in the offline
+proxy, so staggering need not mean choosing obviously weak paths.
+
+At each anchor, the server compacts only lanes needing the big denoiser into a
+microbatch. Teleported lanes continue through scalar momentum, a resident small
+walker, or prefetched neighbour deltas. A later shared anchor can reconverge the
+lanes for an efficient full batch. This creates a natural
+quality--variation--compute control: conservative lanes receive more real
+refinement, exploratory lanes receive a different warp, and all four reuse the
+same prompt state. The production benchmark must report batch latency,
+active-lane sizes, pairwise perceptual diversity, prompt adherence, and
+per-lane quality; the current paper has not yet measured that GPU path.
+
+\subsection{How the accelerators combine}
+
+The methods operate at different layers, so several combinations are natural.
+They are not automatically multiplicative: once one method removes most
+denoiser work, Amdahl's law reduces the headroom of the next.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Technique} & \textbf{What it contributes} & \textbf{Combination with latent teleportation} \\
+\midrule
+AYS & Places a small number of solver evaluations where their local approximation matters most. & Supplies the real anchors; teleportation predicts the latent state between them. \\
+Flow matching / reflow & Trains straighter probability-flow trajectories and improves low-NFE integration. & Extends the horizon over which a tangent or neighbour transport remains valid; coefficients must still be refit. \\
+Consistency / LCM & Learns a direct few-step map to a consistent endpoint. & Acts as a cheap proposer, endpoint teacher, or fallback lane; a native 2--4-step model leaves less post-training skip headroom. \\
+DeepCache / FORA / TaylorSeer & Reuses or forecasts internal denoiser features across nearby steps. & Can reduce the cost of the remaining real anchors while latent teleportation reduces their count. \\
+Fused kernels / compiled serving & Reduces each real call, allocation, transfer, and launch overhead. & Speeds the unavoidable anchors and makes active-lane compaction practical; measured total gain remains Amdahl-limited. \\
+Trajectory retrieval & Provides prompt- and style-conditioned local directions from previous generations. & Adjusts the warp direction, curvature, and confidence rather than copying a finished image. \\
+\bottomrule
+\end{tabularx}
+\caption{Composability map. Rows describe mechanisms and hypotheses, not a
+benchmark claiming that all combinations have been measured.}
+\label{tab:composability}
+\end{table}
+
 \section{Serving Integration}
 
 The intended deployment target is a single-GPU multi-tenant server in which a
@@ -648,6 +851,17 @@ allocated memory withheld from the next caller. This is what would allow a draft
 model to be resident at all, which is the natural next step for the speculative
 family.
 
+The calibrated forecaster itself needs only a small table of
+$(t,k,\alpha_{t,k})$ scalars and should remain device-resident. Larger trajectory
+records belong in pinned host memory or NVMe, with prompt retrieval and
+asynchronous prefetch occurring while the text encoder or preceding anchor
+runs. The request scheduler should batch by model/LoRA identity first, then by
+next anchor, compact active lanes into contiguous buffers, and release cached
+trajectory pages as soon as their last consumer advances. Model or adapter
+swaps become natural preemption boundaries: finish an anchor, spill the small
+latent state, serve the higher-priority resident model, then restore and
+continue from a verified point.
+
 Second, the request path itself is C rather than Python, with the HTTP relay
 preserving byte-exact streaming so that image bytes are never re-encoded.
 CuteDSL contributes fused kernels used by the Z-Image transformer on sm\_120 ---
@@ -656,6 +870,9 @@ AdaLN --- which accelerate the denoiser itself and are therefore complementary t
 everything in this paper: they make each step cheaper, whereas we tried to make
 steps fewer. Given the Amdahl result of Section~\ref{sec:e2e}, kernel work of
 this kind is currently the better investment of the two at our operating point.
+At a 30-step quality mode, however, denoising should occupy a much larger share
+of latency; step reduction, per-step fusion, and memory-aware scheduling can
+then compound over different portions of the request.
 
 \section{Limitations and Threats to Validity}
 \label{sec:limitations}
@@ -691,6 +908,18 @@ results are not included in this report, and the production trajectory corpus
 (3D assets and an art library, on the order of tens of gigabytes) is
 described from the system design rather than measured in these experiments.
 
+\paragraph{The aligned schedule is an offline true-anchor proxy.}
+Table~\ref{tab:schedule-ablation} resets every interval to a latent from the
+recorded teacher trajectory. A real branched sampler feeds an approximate
+teleported state into its next denoiser call, so errors can compound or be
+corrected in ways this table cannot represent. The 30-step/four-call target,
+active-lane batch compaction, pairwise diversity, and decoded images from
+calibrated momentum remain queued production experiments. We do not convert the
+proxy improvement into an image-quality or latency claim. Because the stored
+16-step callbacks begin after the first denoiser call, the current deployment
+table also lacks a coefficient for the first interval; the implementation
+explicitly falls back to unit-scale Taylor there.
+
 \paragraph{No exact verification.} Unlike speculative decoding, our accepted
 latents are not guaranteed to match the target model's. Every method here trades
 quality for time, and the confidence gate bounds that trade heuristically rather
@@ -701,7 +930,11 @@ than provably.
 Latent teleportation is a family of approximate trajectory forecasts and warm
 starts for diffusion, not an exact verifier. The premise is supported: the
 trajectory is smooth enough that one schedule-calibrated momentum scalar reduces
-held-out forecast error by 20--33\% over raw Taylor, and the evaluated drafting
+held-out forecast error by 20--37\% over raw Taylor through $k=8$. Aligning a
+four-interval proxy reduces local error by \AlignedFourImprovement{}, and four
+distinct near-optimal schedules stay within \StaggeredGap{} of the best. These
+results support schedule-aware and batch-selective teleportation, while the
+evaluated drafting
 schemes remove up to $\CallReductionKThree\times$ denoiser calls. All 36 learned
 and Taylor candidates in the image sweep preserve the requested subject or
 scene, while larger horizons introduce visible retention costs that the grids
@@ -711,9 +944,11 @@ At the tested $512^2$/16-step serving point, fixed text and VAE work masks most
 of the saved calls: speculative walking measures $\CorrectedSpeedupKThree\times$
 end to end and the destructive skip ceiling is
 $\CorrectedSkipKThree\times$. That result identifies where the system must move
-next. The immediate milestone is to run schedule-calibrated momentum through
-the full image sweep, measure denoiser-only timing alongside end-to-end timing,
-and repeat at operating points where denoising dominates. Cache-guided
+next. The immediate milestone is a held-out 30-step teacher experiment with
+approximately four real calls, decoded-image and preference evaluation, and
+denoiser-only timing alongside end-to-end timing. A batch-of-four run should
+then test staggered schedules with active-lane compaction and pairwise diversity.
+Cache-guided
 teleportation, confidence gating, and LoRA-space transport then remain distinct
 follow-on hypotheses rather than implied results.
 
@@ -725,8 +960,8 @@ baseline.
 
 \subsubsection*{Reproducibility}
 
-Code, both analysis harnesses, generated contact sheets, their source hashes,
-and the raw summary JSON are in \citet{cutedsl}. Full-resolution source panels
+Code, the analysis harnesses, generated contact sheets, their source hashes,
+and the raw result JSON are in \citet{cutedsl}. Full-resolution source panels
 remain in the experiment store; the committed grids contain every panel used in
 the paper. The serving gateway is in
 \citet{omniservenative}. The LoRA adapter library is not open source; its

@@ -15,7 +15,6 @@ from pathlib import Path
 
 import torch
 
-
 METHODS = (
     "identity",
     "taylor1",
@@ -43,7 +42,27 @@ def _mean_std(values: list[float]) -> dict[str, float]:
     }
 
 
-def run(trajectory_dir: Path, folds: int) -> dict:
+def _fit_coefficients(trajectories: torch.Tensor, step: int, draft_k: int) -> tuple[float, float, float]:
+    anchor = trajectories[:, step]
+    target_move = trajectories[:, step + draft_k] - anchor
+    delta = anchor - trajectories[:, step - 1]
+    previous_delta = trajectories[:, step - 1] - trajectories[:, step - 2]
+
+    velocity = draft_k * delta
+    alpha = _dot(velocity, target_move) / _dot(velocity, velocity).clamp_min(1e-12)
+
+    aa = _dot(delta, delta)
+    ab = _dot(delta, previous_delta)
+    bb = _dot(previous_delta, previous_delta)
+    ay = _dot(delta, target_move)
+    by = _dot(previous_delta, target_move)
+    determinant = (aa * bb - ab * ab).clamp_min(1e-12)
+    first_weight = (ay * bb - by * ab) / determinant
+    previous_weight = (by * aa - ay * ab) / determinant
+    return float(alpha), float(first_weight), float(previous_weight)
+
+
+def run(trajectory_dir: Path, folds: int, max_k: int) -> dict:
     files = sorted(trajectory_dir.glob("*.pt"))
     if len(files) < folds:
         raise ValueError(f"need at least {folds} trajectories, found {len(files)}")
@@ -67,14 +86,9 @@ def run(trajectory_dir: Path, folds: int) -> dict:
         train = trajectories[~test_mask]
         test = trajectories[test_mask]
 
-        for draft_k in (1, 2, 3, 4):
+        for draft_k in range(1, max_k + 1):
             by_method = {method: [] for method in METHODS}
             for step in range(2, n_steps - draft_k):
-                anchor_train = train[:, step]
-                target_move_train = train[:, step + draft_k] - anchor_train
-                delta_train = anchor_train - train[:, step - 1]
-                previous_delta_train = train[:, step - 1] - train[:, step - 2]
-
                 anchor = test[:, step]
                 target = test[:, step + draft_k]
                 delta = anchor - test[:, step - 1]
@@ -84,17 +98,9 @@ def run(trajectory_dir: Path, folds: int) -> dict:
                     excluded.append({"fold": fold, "step": step, "draft_k": draft_k})
                     continue
 
-                velocity = draft_k * delta_train
-                alpha = _dot(velocity, target_move_train) / _dot(velocity, velocity).clamp_min(1e-12)
-
-                aa = _dot(delta_train, delta_train)
-                ab = _dot(delta_train, previous_delta_train)
-                bb = _dot(previous_delta_train, previous_delta_train)
-                ay = _dot(delta_train, target_move_train)
-                by = _dot(previous_delta_train, target_move_train)
-                determinant = (aa * bb - ab * ab).clamp_min(1e-12)
-                first_weight = (ay * bb - by * ab) / determinant
-                previous_weight = (by * aa - ay * ab) / determinant
+                alpha, first_weight, previous_weight = _fit_coefficients(
+                    train, step, draft_k
+                )
 
                 second_difference = delta - previous_delta
                 curvature_factor = draft_k * (draft_k + 1) / 2
@@ -103,11 +109,11 @@ def run(trajectory_dir: Path, folds: int) -> dict:
                     "taylor1": anchor + draft_k * delta,
                     "average_velocity": anchor + draft_k * 0.5 * (delta + previous_delta),
                     "taylor2": anchor + draft_k * delta + curvature_factor * second_difference,
-                    "scaled_momentum": anchor + alpha.to(delta.dtype) * draft_k * delta,
+                    "scaled_momentum": anchor + alpha * draft_k * delta,
                     "two_delta_fit": (
                         anchor
-                        + first_weight.to(delta.dtype) * delta
-                        + previous_weight.to(delta.dtype) * previous_delta
+                        + first_weight * delta
+                        + previous_weight * previous_delta
                     ),
                 }
 
@@ -130,9 +136,9 @@ def run(trajectory_dir: Path, folds: int) -> dict:
                         "fold": fold,
                         "step": step,
                         "draft_k": draft_k,
-                        "momentum_scale": round(float(alpha), 6),
-                        "first_delta_weight": round(float(first_weight), 6),
-                        "previous_delta_weight": round(float(previous_weight), 6),
+                        "momentum_scale": round(alpha, 6),
+                        "first_delta_weight": round(first_weight, 6),
+                        "previous_delta_weight": round(previous_weight, 6),
                     }
                 )
 
@@ -149,7 +155,7 @@ def run(trajectory_dir: Path, folds: int) -> dict:
             )
 
     summary = {}
-    for draft_k in (1, 2, 3, 4):
+    for draft_k in range(1, max_k + 1):
         rows = [row for row in fold_rows if row["draft_k"] == draft_k]
         methods = {
             method: _mean_std([row["methods"][method] for row in rows])
@@ -165,12 +171,34 @@ def run(trajectory_dir: Path, folds: int) -> dict:
             "methods": methods,
         }
 
+    deployment_coefficients = []
+    for draft_k in range(1, max_k + 1):
+        for step in range(2, n_steps - draft_k):
+            movement = (
+                trajectories[:, step + draft_k] - trajectories[:, step]
+            ).flatten(1).norm(dim=1)
+            if float(movement.mean()) < 1e-4:
+                continue
+            alpha, first_weight, previous_weight = _fit_coefficients(
+                trajectories, step, draft_k
+            )
+            deployment_coefficients.append(
+                {
+                    "step": step,
+                    "draft_k": draft_k,
+                    "momentum_scale": round(alpha, 6),
+                    "first_delta_weight": round(first_weight, 6),
+                    "previous_delta_weight": round(previous_weight, 6),
+                }
+            )
+
     return {
         "protocol": {
             "trajectory_dir": str(trajectory_dir),
             "n_trajectories": n_trajectories,
             "n_steps": n_steps,
             "folds": folds,
+            "max_draft_k": max_k,
             "fold_assignment": "sorted trajectory index modulo fold count",
             "fit_scope": "one or two scalar coefficients per scheduler step and draft_k, trained on four folds",
             "metric": "mean relL2 per (step, draft_k) cell; cells weighted equally",
@@ -179,6 +207,7 @@ def run(trajectory_dir: Path, folds: int) -> dict:
         "fold_rows": fold_rows,
         "cells": cells,
         "coefficients": coefficients,
+        "deployment_coefficients": deployment_coefficients,
         "excluded_degenerate_cells": excluded,
     }
 
@@ -191,6 +220,7 @@ def main() -> None:
         default=Path("/sdb-disk/latentteleport-spec/trajs-16step-512"),
     )
     parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument("--max-k", type=int, default=8)
     parser.add_argument(
         "--output",
         type=Path,
@@ -198,7 +228,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    result = run(args.trajectory_dir, args.folds)
+    result = run(args.trajectory_dir, args.folds, args.max_k)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(f"wrote {args.output}")
