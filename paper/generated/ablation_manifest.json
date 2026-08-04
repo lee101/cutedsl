@@ -1,0 +1,698 @@
+{
+  "description": "Losslessly labelled/resized grids of existing experiment PNGs; no synthesized panels.",
+  "raw_root": "/sdb-disk/latentteleport-spec",
+  "prompts": [
+    "a lighthouse on a cliff at golden hour, crashing waves",
+    "portrait of an old fisherman with a pipe, dramatic lighting",
+    "a cozy cabin in a snowy forest at night, warm windows",
+    "cyberpunk street market in the rain, neon signs",
+    "a fox curled up on autumn leaves, soft light",
+    "isometric tiny island with a waterfall and windmill"
+  ],
+  "style_labels": [
+    "Golden-hour landscape",
+    "Dramatic portrait",
+    "Snowy night scene",
+    "Cyberpunk / neon",
+    "Soft-light wildlife",
+    "Isometric illustration"
+  ],
+  "metrics": {
+    "k1/p0/base": {
+      "draft_k": 1,
+      "prompt_index": 0,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/0_base.png",
+      "sha256": "d88ad4ab62d70c117cc167de24312a65f0320ca6c82a0798ce86abf9d327cf4e",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k1/p0/spec": {
+      "draft_k": 1,
+      "prompt_index": 0,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/0_spec.png",
+      "sha256": "ba17b7722096b149fbb1728654caab7500912cb659ade5520b3374cd2a28bbe5",
+      "psnr_db": 14.383,
+      "ssim": 0.7321
+    },
+    "k1/p0/taylor": {
+      "draft_k": 1,
+      "prompt_index": 0,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/0_taylor.png",
+      "sha256": "fea365631d9a625948e9bb72cbbf6887a6373c7b0d4e200cd108e91d0a639f1c",
+      "psnr_db": 14.593,
+      "ssim": 0.72409
+    },
+    "k1/p0/skip": {
+      "draft_k": 1,
+      "prompt_index": 0,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/0_skip.png",
+      "sha256": "23357224f55b5ccd3e7f80bf835edb39536dbbc1eab700be4f294f3be64dbcb2",
+      "psnr_db": 11.581,
+      "ssim": 0.2603
+    },
+    "k1/p1/base": {
+      "draft_k": 1,
+      "prompt_index": 1,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/1_base.png",
+      "sha256": "e2c6923478c9b638e8410438bfa6e4fb4713486133347dd83fbf32b73bf9f9dd",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k1/p1/spec": {
+      "draft_k": 1,
+      "prompt_index": 1,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/1_spec.png",
+      "sha256": "8e3d9af053eddc44d408d1cca793e8daced9ff3c4bcf2eaa2a95c6b990083782",
+      "psnr_db": 19.578,
+      "ssim": 0.53038
+    },
+    "k1/p1/taylor": {
+      "draft_k": 1,
+      "prompt_index": 1,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/1_taylor.png",
+      "sha256": "8d5f540f196bbf4240e69553164b546f67e849c2f46f046cc7635346513069a5",
+      "psnr_db": 20.877,
+      "ssim": 0.68149
+    },
+    "k1/p1/skip": {
+      "draft_k": 1,
+      "prompt_index": 1,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/1_skip.png",
+      "sha256": "866611efb6da56753eb66d204ed4c638b71304c94eab356f44d8d236624aa5a2",
+      "psnr_db": 9.304,
+      "ssim": 0.13503
+    },
+    "k1/p2/base": {
+      "draft_k": 1,
+      "prompt_index": 2,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/2_base.png",
+      "sha256": "38e8c9be68e582a6fb5af30125481bcae95902011ab48b3ed045dbf4ac7b414f",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k1/p2/spec": {
+      "draft_k": 1,
+      "prompt_index": 2,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/2_spec.png",
+      "sha256": "5c86f1905ed57ac05313e2fb3ea5091da8a3dba0d0d47a7daa990dbf340517da",
+      "psnr_db": 17.58,
+      "ssim": 0.62089
+    },
+    "k1/p2/taylor": {
+      "draft_k": 1,
+      "prompt_index": 2,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/2_taylor.png",
+      "sha256": "111ea6a0d4c4e7987b87bb41d27ad9de04682db5cc22c9c107f823682867789b",
+      "psnr_db": 18.578,
+      "ssim": 0.70469
+    },
+    "k1/p2/skip": {
+      "draft_k": 1,
+      "prompt_index": 2,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/2_skip.png",
+      "sha256": "e96d21d100a5cae6fb963556ff4d8d8fe9d151778413ddca57caad9c3d88ed7f",
+      "psnr_db": 10.589,
+      "ssim": 0.23624
+    },
+    "k1/p3/base": {
+      "draft_k": 1,
+      "prompt_index": 3,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/3_base.png",
+      "sha256": "32ec80dae0b51baebcd0754d6c3c7a1f9964a542305902351a6cc0c775086491",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k1/p3/spec": {
+      "draft_k": 1,
+      "prompt_index": 3,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/3_spec.png",
+      "sha256": "dd57ae227f2c5786de923344b28630280063da6b6d87a68fa6fbcccdf448dbff",
+      "psnr_db": 17.35,
+      "ssim": 0.67188
+    },
+    "k1/p3/taylor": {
+      "draft_k": 1,
+      "prompt_index": 3,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/3_taylor.png",
+      "sha256": "c1b4038b41dce46f954b6c0d5c43230a26e4824e5a688c94d8347672064b313e",
+      "psnr_db": 22.293,
+      "ssim": 0.81779
+    },
+    "k1/p3/skip": {
+      "draft_k": 1,
+      "prompt_index": 3,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/3_skip.png",
+      "sha256": "61bce367958a8113707b7a5a3a62218b23af4ce1306e294e10b3a2427e52ed53",
+      "psnr_db": 11.215,
+      "ssim": 0.27878
+    },
+    "k1/p4/base": {
+      "draft_k": 1,
+      "prompt_index": 4,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/4_base.png",
+      "sha256": "edc21e4aa19dc4fdf5667e4832d4adb8e12393cad1d43a48aff7b7fe2e17cf29",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k1/p4/spec": {
+      "draft_k": 1,
+      "prompt_index": 4,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/4_spec.png",
+      "sha256": "3a0c4cb129e44ff4206350c2908549ec674a2c882abfbb07a97e09061f0e9fc5",
+      "psnr_db": 20.116,
+      "ssim": 0.80593
+    },
+    "k1/p4/taylor": {
+      "draft_k": 1,
+      "prompt_index": 4,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/4_taylor.png",
+      "sha256": "f5ad3f13a2e8b55a8c09dd3a4e5f2c68531672b19119d6569c45feb9b845a432",
+      "psnr_db": 22.389,
+      "ssim": 0.85893
+    },
+    "k1/p4/skip": {
+      "draft_k": 1,
+      "prompt_index": 4,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/4_skip.png",
+      "sha256": "802e8474422d4f9e82cfb0c1edbee7728c29f464899c13a60dfa3b6f7f304f81",
+      "psnr_db": 14.073,
+      "ssim": 0.37776
+    },
+    "k1/p5/base": {
+      "draft_k": 1,
+      "prompt_index": 5,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/5_base.png",
+      "sha256": "b9cf721a47c85341fce37b6be63518190b2387d7054e1b4dfb9c50f3ab295c91",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k1/p5/spec": {
+      "draft_k": 1,
+      "prompt_index": 5,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/5_spec.png",
+      "sha256": "c89fc621155b6ff811c7a22b36b2b0bc980f2ffdb6a97472085694607806b7c5",
+      "psnr_db": 19.835,
+      "ssim": 0.8347
+    },
+    "k1/p5/taylor": {
+      "draft_k": 1,
+      "prompt_index": 5,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/5_taylor.png",
+      "sha256": "31e9f70f8af5170288ce5f82a938be74135b3a960c08c078198c4acf19cb2abb",
+      "psnr_db": 19.948,
+      "ssim": 0.83468
+    },
+    "k1/p5/skip": {
+      "draft_k": 1,
+      "prompt_index": 5,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k1/5_skip.png",
+      "sha256": "3edafcc53beaf6b5e8a893706211454b40c94d2a7b2912e793bcc1bf2cafd4fc",
+      "psnr_db": 9.925,
+      "ssim": 0.17811
+    },
+    "k2/p0/base": {
+      "draft_k": 2,
+      "prompt_index": 0,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/0_base.png",
+      "sha256": "d88ad4ab62d70c117cc167de24312a65f0320ca6c82a0798ce86abf9d327cf4e",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k2/p0/spec": {
+      "draft_k": 2,
+      "prompt_index": 0,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/0_spec.png",
+      "sha256": "88ed13e65816d3f3706c28b245f413583af59ee30dbae870cd90fdf72e3f0d77",
+      "psnr_db": 13.87,
+      "ssim": 0.71263
+    },
+    "k2/p0/taylor": {
+      "draft_k": 2,
+      "prompt_index": 0,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/0_taylor.png",
+      "sha256": "cabf797ee69b29d4794e98b20b006d3869f78cfcbb776b892845484bc617c4b7",
+      "psnr_db": 14.17,
+      "ssim": 0.68213
+    },
+    "k2/p0/skip": {
+      "draft_k": 2,
+      "prompt_index": 0,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/0_skip.png",
+      "sha256": "f9b47a29b614ef4bc3641b5414ba6cdb997e5bd7c4d0eecb0a53e5e7f7819901",
+      "psnr_db": 9.764,
+      "ssim": 0.17853
+    },
+    "k2/p1/base": {
+      "draft_k": 2,
+      "prompt_index": 1,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/1_base.png",
+      "sha256": "e2c6923478c9b638e8410438bfa6e4fb4713486133347dd83fbf32b73bf9f9dd",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k2/p1/spec": {
+      "draft_k": 2,
+      "prompt_index": 1,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/1_spec.png",
+      "sha256": "ff332474fe513e49a8a982f15fe5c666fc3459f1ac29999f23f3d6dd234ed7a9",
+      "psnr_db": 20.263,
+      "ssim": 0.56478
+    },
+    "k2/p1/taylor": {
+      "draft_k": 2,
+      "prompt_index": 1,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/1_taylor.png",
+      "sha256": "75cd0369df054bd4a5c72d4e87f65923a027cfe43c106cd6dcfe05f73fe34aba",
+      "psnr_db": 18.816,
+      "ssim": 0.52052
+    },
+    "k2/p1/skip": {
+      "draft_k": 2,
+      "prompt_index": 1,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/1_skip.png",
+      "sha256": "5367aeba7be113cd75d0ca7325eb29ec7972aca37ba84c4cfe4fc7dbce9f8493",
+      "psnr_db": 7.684,
+      "ssim": 0.09991
+    },
+    "k2/p2/base": {
+      "draft_k": 2,
+      "prompt_index": 2,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/2_base.png",
+      "sha256": "38e8c9be68e582a6fb5af30125481bcae95902011ab48b3ed045dbf4ac7b414f",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k2/p2/spec": {
+      "draft_k": 2,
+      "prompt_index": 2,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/2_spec.png",
+      "sha256": "a1e24a9ac00c1db150cbf16d1e2aac99c882ae62f3f2937a5afc27c7492b3438",
+      "psnr_db": 15.746,
+      "ssim": 0.54454
+    },
+    "k2/p2/taylor": {
+      "draft_k": 2,
+      "prompt_index": 2,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/2_taylor.png",
+      "sha256": "ca7c58983cdd557a37350fec92c5a7705141d208692cc458c000434775491516",
+      "psnr_db": 16.012,
+      "ssim": 0.52255
+    },
+    "k2/p2/skip": {
+      "draft_k": 2,
+      "prompt_index": 2,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/2_skip.png",
+      "sha256": "a448bbde0fc7fb0624f34804249ced0248c1a3fbfe3344e669fe8deabd0334a6",
+      "psnr_db": 9.153,
+      "ssim": 0.18463
+    },
+    "k2/p3/base": {
+      "draft_k": 2,
+      "prompt_index": 3,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/3_base.png",
+      "sha256": "32ec80dae0b51baebcd0754d6c3c7a1f9964a542305902351a6cc0c775086491",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k2/p3/spec": {
+      "draft_k": 2,
+      "prompt_index": 3,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/3_spec.png",
+      "sha256": "a08cd85067bb274baa2d14f06b3ed295870f3422a828ef1a60acd69c26f9b1e0",
+      "psnr_db": 15.785,
+      "ssim": 0.56298
+    },
+    "k2/p3/taylor": {
+      "draft_k": 2,
+      "prompt_index": 3,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/3_taylor.png",
+      "sha256": "a57046c3e0fd3c2c220d1a34c6cacb61de8d4d48ab914d31dc5aa22fc4af351a",
+      "psnr_db": 17.159,
+      "ssim": 0.58344
+    },
+    "k2/p3/skip": {
+      "draft_k": 2,
+      "prompt_index": 3,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/3_skip.png",
+      "sha256": "1e7f39d71a439d9a4cc5fe95c6927071f7da740c3b7c29783718112845d8289d",
+      "psnr_db": 9.716,
+      "ssim": 0.22542
+    },
+    "k2/p4/base": {
+      "draft_k": 2,
+      "prompt_index": 4,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/4_base.png",
+      "sha256": "edc21e4aa19dc4fdf5667e4832d4adb8e12393cad1d43a48aff7b7fe2e17cf29",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k2/p4/spec": {
+      "draft_k": 2,
+      "prompt_index": 4,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/4_spec.png",
+      "sha256": "94707bf90c49e72b35c8f014633e421437584c7cf7f5b26f7b7629a26611ec85",
+      "psnr_db": 19.188,
+      "ssim": 0.77268
+    },
+    "k2/p4/taylor": {
+      "draft_k": 2,
+      "prompt_index": 4,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/4_taylor.png",
+      "sha256": "6726c55aa9523aaf24ee3d9469598b8db8cc6591e13edf57d31023d37368b320",
+      "psnr_db": 19.296,
+      "ssim": 0.73856
+    },
+    "k2/p4/skip": {
+      "draft_k": 2,
+      "prompt_index": 4,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/4_skip.png",
+      "sha256": "609705178569981d18687b53b4f36fc66ea58f97ca65388dac7dad255841fb56",
+      "psnr_db": 12.168,
+      "ssim": 0.29655
+    },
+    "k2/p5/base": {
+      "draft_k": 2,
+      "prompt_index": 5,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/5_base.png",
+      "sha256": "b9cf721a47c85341fce37b6be63518190b2387d7054e1b4dfb9c50f3ab295c91",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k2/p5/spec": {
+      "draft_k": 2,
+      "prompt_index": 5,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/5_spec.png",
+      "sha256": "04430cf1dab2a851afe06290371a9e76db659900b3edda1d46e044aad3f59f3f",
+      "psnr_db": 18.799,
+      "ssim": 0.81468
+    },
+    "k2/p5/taylor": {
+      "draft_k": 2,
+      "prompt_index": 5,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/5_taylor.png",
+      "sha256": "300ffe1e7fe82e1d28459e5123d5785cf83ead3ec22020cc68727f2e2da5a2e6",
+      "psnr_db": 18.263,
+      "ssim": 0.7742
+    },
+    "k2/p5/skip": {
+      "draft_k": 2,
+      "prompt_index": 5,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k2/5_skip.png",
+      "sha256": "b8dc7b253d4502bedfef9a70eba5f3f17c94ae908b0629cc8357d308f5795d99",
+      "psnr_db": 7.593,
+      "ssim": 0.10807
+    },
+    "k3/p0/base": {
+      "draft_k": 3,
+      "prompt_index": 0,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/0_base.png",
+      "sha256": "d88ad4ab62d70c117cc167de24312a65f0320ca6c82a0798ce86abf9d327cf4e",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k3/p0/spec": {
+      "draft_k": 3,
+      "prompt_index": 0,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/0_spec.png",
+      "sha256": "2ab03049c34497b61ed6ea710821fc4f7ed4a1d7fc23ed1f91e17b31fbf25298",
+      "psnr_db": 13.871,
+      "ssim": 0.71299
+    },
+    "k3/p0/taylor": {
+      "draft_k": 3,
+      "prompt_index": 0,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/0_taylor.png",
+      "sha256": "4a71135972bfcf778ada2fbd508d93bbe19b0596610fefda4cec2f26ce35717c",
+      "psnr_db": 14.122,
+      "ssim": 0.6664
+    },
+    "k3/p0/skip": {
+      "draft_k": 3,
+      "prompt_index": 0,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/0_skip.png",
+      "sha256": "57b94240012948c471c3ee3e908e7fd17fd06b4551e923cd988b642a633d8392",
+      "psnr_db": 9.32,
+      "ssim": 0.16484
+    },
+    "k3/p1/base": {
+      "draft_k": 3,
+      "prompt_index": 1,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/1_base.png",
+      "sha256": "e2c6923478c9b638e8410438bfa6e4fb4713486133347dd83fbf32b73bf9f9dd",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k3/p1/spec": {
+      "draft_k": 3,
+      "prompt_index": 1,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/1_spec.png",
+      "sha256": "3d043e7041d3e898aa21087de1798eb5c617bedbe374a44a934c473af722ec41",
+      "psnr_db": 19.111,
+      "ssim": 0.5129
+    },
+    "k3/p1/taylor": {
+      "draft_k": 3,
+      "prompt_index": 1,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/1_taylor.png",
+      "sha256": "cd213d07f3e5a389456909b3eef2b23a2642d718491eb67e21dada952afe5b6b",
+      "psnr_db": 17.724,
+      "ssim": 0.45289
+    },
+    "k3/p1/skip": {
+      "draft_k": 3,
+      "prompt_index": 1,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/1_skip.png",
+      "sha256": "78884a8315ec6d4ec9c731e97e5faead0decb6a23cc976ed4ffc3d6a0a4bf458",
+      "psnr_db": 7.367,
+      "ssim": 0.0956
+    },
+    "k3/p2/base": {
+      "draft_k": 3,
+      "prompt_index": 2,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/2_base.png",
+      "sha256": "38e8c9be68e582a6fb5af30125481bcae95902011ab48b3ed045dbf4ac7b414f",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k3/p2/spec": {
+      "draft_k": 3,
+      "prompt_index": 2,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/2_spec.png",
+      "sha256": "b54a2dd58417881eddc6212932554a8978a9065536f5403f1016dd92e3ad97b1",
+      "psnr_db": 15.256,
+      "ssim": 0.49956
+    },
+    "k3/p2/taylor": {
+      "draft_k": 3,
+      "prompt_index": 2,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/2_taylor.png",
+      "sha256": "f081d96e900894eaef9f512916b2dfd0dcff2ac37ded637c0fc37d13996639d7",
+      "psnr_db": 14.682,
+      "ssim": 0.45429
+    },
+    "k3/p2/skip": {
+      "draft_k": 3,
+      "prompt_index": 2,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/2_skip.png",
+      "sha256": "c7becb627fa7c4e29df109a519ee37897490240708c5c67778d4dcd73f368144",
+      "psnr_db": 8.819,
+      "ssim": 0.17715
+    },
+    "k3/p3/base": {
+      "draft_k": 3,
+      "prompt_index": 3,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/3_base.png",
+      "sha256": "32ec80dae0b51baebcd0754d6c3c7a1f9964a542305902351a6cc0c775086491",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k3/p3/spec": {
+      "draft_k": 3,
+      "prompt_index": 3,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/3_spec.png",
+      "sha256": "4281150ccaf3e6b3eb325f17b62b21c36e442e4aef7d2d8bbc956e0f2d803d63",
+      "psnr_db": 14.702,
+      "ssim": 0.50381
+    },
+    "k3/p3/taylor": {
+      "draft_k": 3,
+      "prompt_index": 3,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/3_taylor.png",
+      "sha256": "963fc9216ba70e4a962c04de31b28757721e23aa203f4d1a0f1846cd7cbae537",
+      "psnr_db": 15.741,
+      "ssim": 0.50628
+    },
+    "k3/p3/skip": {
+      "draft_k": 3,
+      "prompt_index": 3,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/3_skip.png",
+      "sha256": "f8d4797180c2757fab3a5707cd3e48e672bbede1dfb29d6e3ff46bc272ea222e",
+      "psnr_db": 9.329,
+      "ssim": 0.21692
+    },
+    "k3/p4/base": {
+      "draft_k": 3,
+      "prompt_index": 4,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/4_base.png",
+      "sha256": "edc21e4aa19dc4fdf5667e4832d4adb8e12393cad1d43a48aff7b7fe2e17cf29",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k3/p4/spec": {
+      "draft_k": 3,
+      "prompt_index": 4,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/4_spec.png",
+      "sha256": "81e9665777760867f9de95384ac95a0f3e7a2465b37fc3b2acd43ebebdb93139",
+      "psnr_db": 18.532,
+      "ssim": 0.75119
+    },
+    "k3/p4/taylor": {
+      "draft_k": 3,
+      "prompt_index": 4,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/4_taylor.png",
+      "sha256": "6cfb1c61a5272d4e7924e28d4067c177d7d8709434e947b1e6997e3fba4c2639",
+      "psnr_db": 18.816,
+      "ssim": 0.69188
+    },
+    "k3/p4/skip": {
+      "draft_k": 3,
+      "prompt_index": 4,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/4_skip.png",
+      "sha256": "8e7190758173e10a8681a4c7bbc332326f2b7e409083a17f2459ad895d6b68ee",
+      "psnr_db": 11.787,
+      "ssim": 0.28433
+    },
+    "k3/p5/base": {
+      "draft_k": 3,
+      "prompt_index": 5,
+      "method": "base",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/5_base.png",
+      "sha256": "b9cf721a47c85341fce37b6be63518190b2387d7054e1b4dfb9c50f3ab295c91",
+      "psnr_db": Infinity,
+      "ssim": 1.0
+    },
+    "k3/p5/spec": {
+      "draft_k": 3,
+      "prompt_index": 5,
+      "method": "spec",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/5_spec.png",
+      "sha256": "4602fe3d817d3d9636f6bda2fbf2cd93914036128adb6578e60002089c9f8362",
+      "psnr_db": 17.615,
+      "ssim": 0.79113
+    },
+    "k3/p5/taylor": {
+      "draft_k": 3,
+      "prompt_index": 5,
+      "method": "taylor",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/5_taylor.png",
+      "sha256": "f267c17ad9a1feae9f7472d712cf345addd11b6a90a2f3910a54f54b82a862f1",
+      "psnr_db": 17.284,
+      "ssim": 0.73801
+    },
+    "k3/p5/skip": {
+      "draft_k": 3,
+      "prompt_index": 5,
+      "method": "skip",
+      "source": "/sdb-disk/latentteleport-spec/e2e-16step-k3/5_skip.png",
+      "sha256": "6442237a0d743223736f3610ea29988504ec9426bc010318827c50795068765a",
+      "psnr_db": 7.082,
+      "ssim": 0.09744
+    }
+  },
+  "summaries": {
+    "1": {
+      "path": "results/speculative/e2e-16step-k1.json",
+      "sha256": "d881fa746c88725a282bfef352841d141254a41b0dbae69b4e2510337314abb5"
+    },
+    "2": {
+      "path": "results/speculative/e2e-16step-k2.json",
+      "sha256": "a66159a147b441faa71958ad84bd39401632c8bca61e8337e75f63bca6c56653"
+    },
+    "3": {
+      "path": "results/speculative/e2e-16step-k3.json",
+      "sha256": "b5fea3daadbe1ef286495abfaf6ed6c18c68d56688331e43998c6814846c511e"
+    }
+  },
+  "outputs": {
+    "method_style_grid": {
+      "path": "paper/figures/method_style_grid.png",
+      "sha256": "1868208271c95122adef545a42c6d566436b6c0b7dca34fa712d41a819d2582a"
+    },
+    "draft_length_grid": {
+      "path": "paper/figures/draft_length_grid.png",
+      "sha256": "ae0c2901f311e823591d616d4c3d5445fc6a353a6984e732ba180bddd7062ede"
+    },
+    "skip_length_grid": {
+      "path": "paper/figures/skip_length_grid.png",
+      "sha256": "8696307f6f380a327ee76bee6dc568dc379b9c09c630ee13c1646ea1a05346af"
+    }
+  }
+}

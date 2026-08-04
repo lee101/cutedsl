@@ -39,13 +39,14 @@ step is likewise a single pass over a large transformer, and where the latent
 trajectory is smooth enough that the next point along it looks eminently
 guessable.
 
-We study three families of guesser: a learned \emph{latent walker} with a
+We evaluate two families of guesser: a learned \emph{latent walker} with a
 \emph{gap interpolator} that drafts $k$ cheap steps and teleports the draft onto
-the big model's likely trajectory; a training-free first-order Taylor
+the big model's likely trajectory, and a training-free first-order Taylor
 extrapolation of the trajectory's own momentum, in the spirit of
-CG-Taylor/TaylorSeer \citep{liu2025taylorseer}; and \emph{latent teleportation}
-proper, in which a $k$-nearest-neighbour cache of previously refined
-trajectories supplies a warm start in a manifold built from earlier generations.
+TaylorSeer \citep{liu2025taylorseer}. We additionally implement a
+$k$-nearest-neighbour trajectory cache and confidence-gating machinery, but do
+not include them in the end-to-end claims: those components remain system
+designs until they receive the same controlled image evaluation.
 
 Our headline finding is a negative one, and we think it is the most useful thing
 in this report. The latent trajectory is highly forecastable: a first-order
@@ -65,10 +66,11 @@ We further report that our first analysis of these same runs claimed
 $\ReportedSpeedupKThree\times$, and that this figure was an artifact of an
 un-warmed first iteration whose baseline took $\WarmupBaseline$\,s against a
 $\MedianBaseline$\,s median. We give the corrected protocol, a reproducible
-analysis harness, ablations over draft length and forecaster family, an account
-of how the method extends to swarms of LoRA adapters with disjoint embedding
-spaces, and a set of recommendations that includes not deploying two of the
-three methods we built.
+analysis harness, ablations over draft length and forecaster family, three grids
+containing the actual generated images across six prompt/style slices, an
+account of how the method extends to swarms of LoRA adapters with disjoint
+embedding spaces, and deployment recommendations grounded in the measured
+speed--quality frontier.
 \end{abstract}
 
 \section{Introduction}
@@ -105,10 +107,10 @@ for reasons that turn out to be more interesting than a speedup would have been.
     trajectory: a $(t,k)$ grid of forecast error for identity, first-order
     Taylor and scalar-affine predictors, establishing that the trajectory is
     genuinely forecastable and quantifying where (Section~\ref{sec:gap}).
-  \item \textbf{Three acceleration mechanisms} --- speculative latent walking
-    with a learned gap interpolator, confidence-gated Taylor forecasting, and
-    $k$-NN latent teleportation from a trajectory cache
-    (Section~\ref{sec:method}).
+  \item \textbf{Two evaluated acceleration mechanisms} --- speculative latent
+    walking with a learned gap interpolator and fixed-horizon Taylor forecasting
+    --- plus clearly separated designs for confidence gating and $k$-NN cache
+    teleportation (Section~\ref{sec:method}).
   \item \textbf{A negative end-to-end result with a diagnosis}: call reductions
     of $\CallReductionKThree\times$ yield $\CorrectedSpeedupKThree\times$
     wall-clock, and a skip-everything ablation caps at
@@ -118,6 +120,10 @@ for reasons that turn out to be more interesting than a speedup would have been.
     runs reported $\ReportedSpeedupKThree\times$; we show it was warm-up
     contamination, and ship an analysis harness that cannot make that mistake
     again (Section~\ref{sec:correction}).
+  \item \textbf{Image-level ablations} over learned speculation, Taylor
+    forecasting, a destructive skip control, three draft lengths, and six
+    prompt/style slices. We publish all panels as contact sheets with PSNR,
+    SSIM, and source-file hashes (Section~\ref{sec:image-ablations}).
   \item \textbf{An extension sketch to LoRA armies}, where adapters induce
     disjoint latent statistics and a shared trajectory cache needs an embedding
     normalisation network (Section~\ref{sec:lora}).
@@ -208,13 +214,15 @@ which is exactly a first-order Taylor step in the step index, in the spirit of
 \citet{liu2025taylorseer}. This is the floor every learned method must beat, and
 in our results it is a stubbornly high floor.
 
-The \textbf{confidence gate} adds the CG in CG-Taylor. Rather than a fixed
+The \textbf{confidence gate} would add the CG in CG-Taylor. Rather than a fixed
 skip schedule, it tracks the recent history of prediction error, estimates the
 derivative of that error, and maps the resulting confidence onto a number of
 refinement steps to spend --- high confidence, fewer real steps. The design
 intent is the diffusion analogue of forecasting one block into the network and
 committing to the whole step if that forecast lands: a cheap partial computation
-acts as a proxy for whether the expensive full computation can be skipped.
+acts as a proxy for whether the expensive full computation can be skipped. The
+end-to-end Taylor arm reported below uses fixed $k$ and does not activate this
+gate; we therefore treat confidence gating as unvalidated system design.
 
 \subsection{Latent teleportation from a trajectory cache}
 
@@ -274,7 +282,10 @@ All measurements are on a single RTX 5090 (32\,GB, sm\_120, compute capability
 12.0) using Z-Image Turbo in \texttt{bfloat16}, at $512\times512$ with a 16-step
 schedule and guidance 0, seed fixed at 7 across arms. Trajectory capture
 collected 200 full 16-step trajectories (402\,MB) storing every intermediate
-latent.
+latent. The image ablation uses six deliberately heterogeneous prompt slices:
+golden-hour landscape, dramatic portrait, snowy night, cyberpunk/neon,
+soft-light wildlife, and isometric illustration. These labels describe prompt
+content; they are not independent style datasets or LoRA adapters.
 
 \paragraph{Metrics.} Forecast quality is measured by
 \begin{equation}
@@ -285,13 +296,17 @@ error normalised by how far the trajectory actually moved. This normalisation is
 what makes the number interpretable: $\relltwo = 1.0$ is the score of predicting
 no movement at all, so any method scoring near $1.0$ is worthless regardless of
 its absolute error. End-to-end image agreement is PSNR against the full-schedule
-baseline image, and wall clock is measured with CUDA synchronisation around each
-arm.
+baseline image. For the image grids we additionally report SSIM, computed on the
+saved RGB PNGs. Both are reference-similarity metrics rather than measures of
+prompt adherence or aesthetic quality. Wall clock is measured with CUDA
+synchronisation around each arm.
 
-\paragraph{Reproducibility.} Every number in this paper is emitted by
-\texttt{scripts/paper\_analysis.py} from the raw result JSON; none is typed by
-hand into the text. Re-running it regenerates the tables and the numeric macros
-used in the prose.
+\paragraph{Reproducibility.} Timing and latent-forecast numbers are emitted by
+\texttt{paper\_analysis.py} from raw result JSON. Image tables and grids are
+emitted by \texttt{paper\_ablation\_grids.py} from the 72 saved PNGs.
+The latter writes a manifest containing the SHA-256 digest, prompt index,
+method, $k$, PSNR, and SSIM for every source panel. No panel is synthesized or
+retouched; grid construction is limited to resizing, borders, and labels.
 
 \section{Results}
 
@@ -320,8 +335,9 @@ the schedule: early steps move erratically, and the last scheduler step of this
 16-step configuration moves the latent by approximately zero. That final step is
 not merely hard to predict --- it is a no-op, and dividing by its movement
 produced an \relltwo{} of $\DegenerateRelLTwo$ at $t=\DegenerateStep$. We exclude
-that cell from all aggregates. It is worth flagging for anyone building on this
-schedule: one of the 16 steps is free to skip with no approximation whatsoever.
+that cell from all aggregates. In the stored float16 trajectories, the final
+latent is duplicated; for this exact pipeline and schedule, that step is a
+candidate for exact removal after verifying the duplication at runtime.
 
 \subsection{Learned walker versus training-free Taylor}
 
@@ -375,37 +391,95 @@ walker. The learned networks win on the metric they were trained for and lose on
 the metric that matters. We take this as the strongest single argument in the
 paper for not deploying the learned walker in its current form.
 
-\subsection{What the images actually look like}
+\subsection{Image ablations across methods, styles, and draft lengths}
+\label{sec:image-ablations}
 
-Figure~\ref{fig:qual} shows the same prompt under the full 16-step baseline, the
-speculative arm at 5 real steps, and the skip control at 5 real steps. The
-speculative image is a coherent, comparable-quality photograph that differs
-\emph{compositionally} from the baseline; the skip image is noise. Their PSNR
-figures --- $19.1$\,dB and $7.4$\,dB respectively for this prompt --- rank them
-correctly but badly calibrate the gap: the drafted image is not ``$19$\,dB
-degraded'', it is a different sample of similar quality, whereas the skip image
-is unusable at any distance measure. This is the concrete case for a perceptual
-judge over a pixel metric, discussed in Section~\ref{sec:limitations}.
+The aggregate timing result is negative, but it does not answer the more useful
+question of \emph{how} each approximation fails. Figures~\ref{fig:method-style},
+\ref{fig:draft-grid}, and~\ref{fig:skip-grid} expose the entire recorded image
+sweep rather than one
+favourable prompt. The raw store contains 72 PNGs: six prompts, four arms, and
+three values of $k$. Because the baseline is regenerated identically for every
+$k$, this corresponds to six unique references and 54 candidate outputs. The
+figures include all six prompt slices, including the first timing row excluded
+as a warm-up outlier; warm-up affects latency, not the already-saved image.
 
-\begin{figure}[h]
+\begin{table}[H]
 \centering
-\begin{subfigure}[b]{0.31\textwidth}
-  \includegraphics[width=\textwidth]{../results/speculative/fisherman-16step-base.png}
-  \caption{Baseline, 16 real steps}
-\end{subfigure}\hfill
-\begin{subfigure}[b]{0.31\textwidth}
-  \includegraphics[width=\textwidth]{../results/speculative/fisherman-5step-spec.png}
-  \caption{Speculative, 5 real steps}
-\end{subfigure}\hfill
-\begin{subfigure}[b]{0.31\textwidth}
-  \includegraphics[width=\textwidth]{../results/speculative/fisherman-5step-skip.png}
-  \caption{Skip control, 5 real steps}
-\end{subfigure}
-\caption{``Portrait of an old fisherman with a pipe'' at $512^2$. Drafting
-degrades composition, not coherence; skipping without correction destroys the
-image. Both arms make the same number of denoiser calls, which is why the skip
-control is the right upper bound on what drafting can win.}
-\label{fig:qual}
+\small
+\input{generated/table_image_hyperparams}
+\caption{Image hyperparameter ablation over all six prompts. Values are mean
+PSNR (dB) and SSIM against the same-seed 16-step reference. Unlike
+Table~\ref{tab:e2e}, no row is removed because this table contains no timing
+measurement. Higher is better.}
+\label{tab:image-hyperparams}
+\end{table}
+
+Table~\ref{tab:image-hyperparams} gives three robust observations. First,
+$k=1$ is the quality frontier: Taylor reaches 19.78\,dB/0.770 and the learned
+method 18.14\,dB/0.699. Second, mean similarity falls as $k$ grows. Learned
+SSIM moves $0.699\rightarrow0.662\rightarrow0.629$, while Taylor moves
+$0.770\rightarrow0.637\rightarrow0.585$. Third, the skip control is not a
+plausible alternative generation: even at $k=1$ it reaches only 0.244 SSIM and
+visually collapses to coloured noise. It is useful only as the compute-saving
+upper bound in Table~\ref{tab:e2e}.
+
+The style-stratified $k=3$ numbers in Table~\ref{tab:image-styles} show why six
+rows matter. Learned speculation is ahead of Taylor on portrait, snowy-night,
+and isometric prompts; Taylor is ahead on landscape, cyberpunk, and wildlife by
+PSNR. The ranking is therefore three against three rather than a universal
+winner. Structural retention also varies widely: learned SSIM ranges from 0.500
+on the snowy scene to 0.791 on the isometric illustration. These are descriptive
+slices, not confidence intervals, but they rule out a claim that one forecaster
+dominates across visual regimes.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\input{generated/table_image_styles}
+\caption{Style-slice ablation at $k=3$ over the six recorded prompts. Each row
+contains one image per method, so the values describe examples rather than a
+population estimate.}
+\label{tab:image-styles}
+\end{table}
+
+The grids also sharpen the metric caveat. A coherent candidate that moves a
+subject or changes texture can score poorly against the reference, while SSIM
+rewards structurally simple scenes differently from detailed photographs. We
+therefore use these metrics to quantify same-seed retention, not to assert equal
+aesthetic quality. A blinded human or calibrated vision-language preference
+study remains required for that claim.
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{figures/method_style_grid.png}
+\caption{Method $\times$ prompt/style ablation at $k=3$ (five real denoiser
+calls), seed 7. Each row is one saved prompt; each panel is an actual generated
+PNG with no content editing. The learned and Taylor arms usually preserve the
+requested subject while changing layout, texture, or fine detail. The skip
+control is visibly destructive in every slice.}
+\label{fig:method-style}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{figures/draft_length_grid.png}
+\caption{Draft-length hyperparameter ablation. Columns vary forecaster family
+and $k\in\{1,2,3\}$; rows vary prompt/style slice. Increasing $k$ means fewer
+real denoiser calls (9, 6, and 5 respectively) and progressively greater
+departure from the same-seed reference. Panel labels report PSNR and SSIM.}
+\label{fig:draft-grid}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{figures/skip_length_grid.png}
+\caption{Skip-control hyperparameter ablation. This arm performs the same real
+denoiser-call schedules as the learned and Taylor arms but supplies no latent
+correction. Its outputs deteriorate from weak structure at $k=1$ to coloured
+noise at $k=3$, demonstrating that call removal alone does not yield a viable
+sample.}
+\label{fig:skip-grid}
 \end{figure}
 
 \subsection{A correction to our own earlier numbers}
@@ -444,8 +518,10 @@ The ablations support a short and slightly deflating set of recommendations.
     the best speed/quality point we measured: $\SpeedupTaylorKOne\times$ at
     $\PsnrTaylorKOne$\,dB PSNR against the full-schedule baseline. Larger $k$
     buys no additional time in this harness while costing 2--4\,dB.
-  \item \textbf{Skip the final scheduler step unconditionally.} It moves the
-    latent by approximately zero. This is free and exact.
+  \item \textbf{Test removal of the final step for this exact schedule.} The
+    stored float16 trajectory duplicates its final latent. Gate the optimisation
+    on a runtime equality/tolerance check rather than generalising it to other
+    schedulers or step counts.
   \item \textbf{Do not report acceleration at $512^2$/16 steps.} Fix the harness
     first: warm up, and time the sampling loop separately from text encode and
     VAE decode. Until the denoiser is the majority of measured time, no drafting
@@ -492,22 +568,24 @@ schedule than from a 50-step sampler, and results here should not be
 extrapolated to undistilled checkpoints, where we would expect drafting to look
 considerably better.
 
-\paragraph{Small prompt set.} Six prompts per configuration, five after warm-up
-exclusion. This is enough to establish that the effect is near $1.0\times$ and
-nowhere near enough to rank methods separated by a few percent. The PSNR
-comparisons between \emph{spec} and \emph{taylor} at $k=2$ and $k=3$ are within
-noise; only the $k=1$ gap is comfortably outside it.
+\paragraph{Small prompt and seed set.} Six prompts per configuration, one seed,
+and five prompts after warm-up exclusion for timing. The contact sheets expose
+every image rather than hiding this sample size, but they do not turn six
+examples into a population. This is enough to establish that the timing effect
+is near $1.0\times$ and nowhere near enough to rank methods separated by a few
+percent. The method-by-style reversals at $k=3$ are evidence against a universal
+ranking, not evidence for six distinct style distributions.
 
-\paragraph{PSNR is a poor proxy for generated-image quality.} A drafted
+\paragraph{PSNR and SSIM are retention metrics, not quality judges.} A drafted
 trajectory that lands on a different but equally plausible image is penalised as
 heavily as one that lands on mush. The qualitative artifacts show precisely
-this: the drafted images are coherent and comparable in quality while differing
-compositionally from the baseline, so their $14$--$19$\,dB PSNR understates them,
-while the skip arm's $8.9$\,dB correctly identifies noise. A perceptual or
-preference-based metric is needed, and a visual-ranking model --- for instance
-the Gemma model already resident in the serving stack, used as a pairwise judge
---- is the obvious instrument. We have not run this, and we decline to report a
-quality ranking we have not measured.
+this: many drafted images remain recognisable while differing compositionally
+from the baseline, whereas the skip arm's $8.9$\,dB correctly identifies noise.
+SSIM adds structural sensitivity but inherits the same reference dependence. A
+perceptual or preference-based metric is needed, and a visual-ranking model ---
+for instance the Gemma model already resident in the serving stack, used as a
+pairwise judge --- is one possible instrument. We have not run this, and we
+decline to report an aesthetic-quality ranking we have not measured.
 
 \paragraph{The trajectory cache is not evaluated end-to-end here.} The
 predictability and drafting results are measured; the $k$-NN teleportation
@@ -540,8 +618,10 @@ than the number we first computed.
 
 \subsubsection*{Reproducibility}
 
-Code, the analysis harness that generates every table above, and the raw result
-JSON are in \citet{cutedsl}. The serving gateway is in
+Code, both analysis harnesses, generated contact sheets, their source hashes,
+and the raw summary JSON are in \citet{cutedsl}. Full-resolution source panels
+remain in the experiment store; the committed grids contain every panel used in
+the paper. The serving gateway is in
 \citet{omniservenative}. The LoRA adapter library is not open source; its
 integration mechanism is described in Section~\ref{sec:lora}.
 

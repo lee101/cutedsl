@@ -2,6 +2,7 @@
 #
 #   make          regenerate tables from raw results, then build the PDF
 #   make tables   regenerate generated/*.tex only
+#   make figures  rebuild image grids (requires /sdb-disk raw experiment PNGs)
 #   make clean    remove build artifacts (keeps the PDF)
 #
 # The tables and the numeric macros used in the prose are generated from the raw
@@ -11,12 +12,15 @@
 PAPER  := latent_teleportation
 PYTHON ?= python3
 
-.PHONY: all tables clean distclean
+.PHONY: all tables figures clean distclean
 
 all: $(PAPER).pdf
 
 tables:
 	cd .. && $(PYTHON) scripts/paper_analysis.py --out paper/generated
+
+figures:
+	cd .. && $(PYTHON) scripts/paper_ablation_grids.py
 
 $(PAPER).pdf: $(PAPER).tex refs.bib tables
 	latexmk -pdf -halt-on-error -interaction=nonstopmode $(PAPER).tex

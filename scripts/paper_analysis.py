@@ -63,8 +63,8 @@ def e2e_table() -> dict:
     out = {}
     for k in (1, 2, 3):
         raw = load_json(
-            SPEC_BASE / f"e2e-16step-k{k}" / "summary.json",
             RESULTS / f"e2e-16step-k{k}.json",
+            SPEC_BASE / f"e2e-16step-k{k}" / "summary.json",
         )
         if raw is None:
             continue
