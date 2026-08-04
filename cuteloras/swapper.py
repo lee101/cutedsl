@@ -198,8 +198,14 @@ class LoRASwapper:
             # bit-for-bit within the fp32 loop's tolerance while cutting kernel
             # launches; CUTELORAS_FUSED_BF16=1 adds bf16 compute (measured up to
             # 3.83x on wide/high-rank stacks, ~4e-3 rel err). Disable via
-            # CUTELORAS_FUSED=0. Single-adapter keeps the plain fp32 path.
-            if len(valid) >= 2 and self._fused_apply:
+            # CUTELORAS_FUSED=0. Single adapters use the fused path only when
+            # BF16 is explicitly enabled.
+            # BF16 tensor-core merge is useful even for one adapter: a typical
+            # Z-Image LoRA touches ~200 wide matrices, and doing every thin
+            # B@A in fp32 leaves tensor cores idle. Multi-adapter fusion still
+            # concatenates ranks to reduce launches; the single-adapter path
+            # simply reuses the same numerically bounded kernel.
+            if self._fused_apply and (len(valid) >= 2 or self._fused_bf16):
                 from cuteloras.fused_apply import fused_lora_delta
                 cdt = torch.bfloat16 if self._fused_bf16 else torch.float32
                 delta = fused_lora_delta(valid, torch.float32, param.device, compute_dtype=cdt)
@@ -242,6 +248,28 @@ class LoRASwapper:
             return param.device
         return torch.device("cpu")
 
+    def _applicable_factor_count(self, factors: dict) -> int:
+        """Count factors that can actually update this transformer's weights.
+
+        This is deliberately checked before a swap mutates any parameters.  On
+        a fast A -> B swap, removing A used to increment the generic ``applied``
+        counter even when every factor in B was incompatible with the model.
+        The swapper would then report B as active while the weights were really
+        back at base.
+        """
+        applicable = 0
+        for module_path, (a, b, scale) in factors.items():
+            if scale == 0.0:
+                continue
+            resolved = self._resolve_target(module_path)
+            if resolved is None:
+                continue
+            _, param, rows = resolved
+            n_rows = param.shape[0] if rows is None else rows.stop - rows.start
+            if (n_rows, param.shape[1]) == (b.shape[0], a.shape[1]):
+                applicable += 1
+        return applicable
+
     def activate(self, loras: list[tuple[str, float]] | list[str] | str | None) -> dict:
         """Make exactly the given LoRA set active.
 
@@ -265,6 +293,16 @@ class LoRASwapper:
         with self._lock:
             if target == self._active:
                 return {"swapped": False, "active": list(target)}
+
+            # Validate each requested adapter independently before subtracting
+            # an existing adapter or touching snapshots.  Otherwise a valid
+            # removal can hide an incompatible target during a fast swap.
+            for lora_id, scale in target:
+                factors = self.get_factors(lora_id).factors
+                if scale != 0.0 and self._applicable_factor_count(factors) == 0:
+                    raise RuntimeError(
+                        f"LoRA activation resolved zero parameters for {[lora_id]}"
+                    )
 
             start = time.perf_counter()
             device = self._first_param_device()

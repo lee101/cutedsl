@@ -26,6 +26,8 @@ class LatentCache:
             "gobed_embedding",
             "num_cached_steps",
             "created_at",
+            "last_accessed",
+            "file_bytes",
             "metadata",
         },
         "bigrams": {
@@ -62,6 +64,8 @@ class LatentCache:
             "gobed_embedding": "BLOB",
             "num_cached_steps": "INTEGER DEFAULT 0",
             "created_at": "REAL",
+            "last_accessed": "REAL",
+            "file_bytes": "INTEGER DEFAULT 0",
             "metadata": "TEXT",
         },
         "bigrams": {
@@ -90,9 +94,20 @@ class LatentCache:
         },
     }
 
-    def __init__(self, cache_dir: str, resolution: tuple[int, int] = (512, 512)):
+    def __init__(
+        self,
+        cache_dir: str,
+        resolution: tuple[int, int] = (512, 512),
+        *,
+        max_entries: int | None = None,
+        max_bytes: int | None = None,
+        prune_interval_s: float = 60.0,
+    ):
         self.cache_dir = Path(cache_dir)
         self.resolution = resolution
+        self.max_entries = max_entries if max_entries is None else max(1, int(max_entries))
+        self.max_bytes = max_bytes if max_bytes is None else max(1, int(max_bytes))
+        self.prune_interval_s = max(0.0, float(prune_interval_s))
         self._res_dir = self.cache_dir / f"{resolution[0]}x{resolution[1]}"
         self._units_dir = self._res_dir / "units"
         self._units_dir.mkdir(parents=True, exist_ok=True)
@@ -100,6 +115,8 @@ class LatentCache:
         self._schema_lock = threading.RLock()
         self._embedding_index_dirty = True
         self._embedding_index: dict[int, tuple[np.ndarray, list[tuple[str, str]]]] = {}
+        self._last_prune_at = 0.0
+        self._touch_times: dict[str, float] = {}
         self._init_db()
 
     def _init_db(self):
@@ -160,6 +177,8 @@ class LatentCache:
                 gobed_embedding BLOB,
                 num_cached_steps INTEGER DEFAULT 0,
                 created_at REAL,
+                last_accessed REAL,
+                file_bytes INTEGER DEFAULT 0,
                 metadata TEXT
             )
         """)
@@ -301,6 +320,17 @@ class LatentCache:
         conn.close()
         return row is not None
 
+    def _touch_unit(self, unit_id: str) -> None:
+        """Persist LRU recency without turning repeated tensor reads into writes."""
+        now = time.time()
+        if now - self._touch_times.get(unit_id, 0.0) < 60.0:
+            return
+        self._touch_times[unit_id] = now
+        self._execute_write(
+            "UPDATE units SET last_accessed=? WHERE unit_id=?",
+            (now, unit_id),
+        )
+
     def store_latents(
         self,
         unit: VisualUnit,
@@ -323,7 +353,9 @@ class LatentCache:
                 tensors["text_embedding_full"] = text_embedding.contiguous().cpu()
             else:
                 tensors["text_embedding"] = text_embedding.contiguous().cpu()
-        save_file(tensors, str(d / "latents.safetensors"))
+        latent_path = d / "latents.safetensors"
+        save_file(tensors, str(latent_path))
+        file_bytes = latent_path.stat().st_size
 
         clip_blob = None
         if text_embedding is not None:
@@ -337,20 +369,192 @@ class LatentCache:
         self._execute_write(
             """INSERT OR REPLACE INTO units
                (unit_id, unit_text, file_path, clip_embedding, gobed_embedding,
-                num_cached_steps, created_at, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                num_cached_steps, created_at, last_accessed, file_bytes, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 unit.unit_id,
                 unit.text,
-                str(d / "latents.safetensors"),
+                str(latent_path),
                 clip_blob,
                 gobed_blob,
                 len(latents),
                 time.time(),
+                time.time(),
+                file_bytes,
                 json.dumps(metadata or {}),
             ),
         )
         self._embedding_index_dirty = True
+        self._maybe_prune()
+
+    def _maybe_prune(self) -> None:
+        if self.max_entries is None and self.max_bytes is None:
+            return
+        now = time.monotonic()
+        if now - self._last_prune_at < self.prune_interval_s:
+            return
+        self._last_prune_at = now
+        self.prune()
+
+    def prune(
+        self,
+        *,
+        max_entries: int | None = None,
+        max_bytes: int | None = None,
+        vacuum: bool = False,
+    ) -> dict[str, int]:
+        """Evict oldest regenerable units until count and byte limits are met.
+
+        File targets come from the cache index but are still constrained to the
+        resolution directory before unlinking. ``vacuum`` is intentionally
+        opt-in because it can be expensive; it is useful for one-time cleanup
+        of a previously unbounded cache.
+        """
+        entry_limit = self.max_entries if max_entries is None else max(1, int(max_entries))
+        byte_limit = self.max_bytes if max_bytes is None else max(1, int(max_bytes))
+        if entry_limit is None and byte_limit is None:
+            return {
+                "removed_entries": 0,
+                "removed_bigrams": 0,
+                "removed_bytes": 0,
+                "remaining_entries": 0,
+                "remaining_bytes": 0,
+            }
+
+        conn = self._conn()
+        rows = conn.execute(
+            """SELECT unit_id, file_path, COALESCE(last_accessed, created_at, 0),
+                      COALESCE(file_bytes, 0)
+               FROM units
+               ORDER BY COALESCE(last_accessed, created_at, 0) ASC"""
+        ).fetchall()
+
+        indexed: list[tuple[str, str, float, int]] = []
+        size_updates: list[tuple[int, str]] = []
+        for unit_id, file_path, accessed, file_bytes in rows:
+            size = int(file_bytes or 0)
+            if size <= 0:
+                try:
+                    size = Path(file_path).stat().st_size
+                except OSError:
+                    size = 0
+                size_updates.append((size, unit_id))
+            indexed.append((unit_id, file_path, float(accessed or 0), size))
+        if size_updates:
+            conn.executemany("UPDATE units SET file_bytes=? WHERE unit_id=?", size_updates)
+
+        bigram_rows = conn.execute(
+            """SELECT bigram_id, unit_a_id, unit_b_id, file_path,
+                      COALESCE(created_at, 0)
+               FROM bigrams
+               ORDER BY COALESCE(created_at, 0) ASC"""
+        ).fetchall()
+        indexed_bigrams: list[tuple[str, str, str, str, float, int]] = []
+        for bigram_id, unit_a_id, unit_b_id, file_path, created_at in bigram_rows:
+            try:
+                size = Path(file_path).stat().st_size
+            except OSError:
+                size = 0
+            indexed_bigrams.append(
+                (bigram_id, unit_a_id, unit_b_id, file_path, float(created_at or 0), size)
+            )
+
+        bigrams_by_unit: dict[str, list[tuple[str, str, str, str, float, int]]] = {}
+        for bigram in indexed_bigrams:
+            bigrams_by_unit.setdefault(bigram[1], []).append(bigram)
+            bigrams_by_unit.setdefault(bigram[2], []).append(bigram)
+
+        remaining_entries = len(indexed)
+        remaining_bytes = sum(row[3] for row in indexed) + sum(row[5] for row in indexed_bigrams)
+        victims: list[tuple[str, str, float, int]] = []
+        victim_unit_ids: set[str] = set()
+        victim_bigrams: list[tuple[str, str, str, str, float, int]] = []
+        victim_bigram_ids: set[str] = set()
+
+        def plan_bigram(row: tuple[str, str, str, str, float, int]) -> None:
+            nonlocal remaining_bytes
+            if row[0] in victim_bigram_ids:
+                return
+            victim_bigram_ids.add(row[0])
+            victim_bigrams.append(row)
+            remaining_bytes -= row[5]
+
+        def plan_unit(row: tuple[str, str, float, int]) -> None:
+            nonlocal remaining_entries, remaining_bytes
+            if row[0] in victim_unit_ids:
+                return
+            victim_unit_ids.add(row[0])
+            victims.append(row)
+            remaining_entries -= 1
+            remaining_bytes -= row[3]
+            for bigram in bigrams_by_unit.get(row[0], []):
+                plan_bigram(bigram)
+
+        # The entry cap applies to reusable single-prompt units. Removing a
+        # unit also removes any pair cache that depends on it.
+        for row in indexed:
+            if entry_limit is None or remaining_entries <= entry_limit:
+                break
+            plan_unit(row)
+
+        # Pair entries are lower-value and can otherwise grow without bound,
+        # so reclaim the oldest pairs before dropping more single units.
+        if byte_limit is not None:
+            for row in indexed_bigrams:
+                if remaining_bytes <= byte_limit:
+                    break
+                plan_bigram(row)
+
+            for row in indexed:
+                if remaining_bytes <= byte_limit:
+                    break
+                plan_unit(row)
+
+        cache_root = self._res_dir.resolve()
+        removed_bytes = 0
+        for bigram_id, _unit_a_id, _unit_b_id, file_path, _created_at, file_bytes in victim_bigrams:
+            path = Path(file_path).resolve()
+            if path.is_relative_to(cache_root):
+                try:
+                    path.unlink()
+                    removed_bytes += file_bytes
+                except FileNotFoundError:
+                    pass
+                try:
+                    path.parent.rmdir()
+                except OSError:
+                    pass
+            conn.execute("DELETE FROM bigrams WHERE bigram_id=?", (bigram_id,))
+
+        for unit_id, file_path, _accessed, file_bytes in victims:
+            path = Path(file_path).resolve()
+            if path.is_relative_to(cache_root):
+                try:
+                    path.unlink()
+                    removed_bytes += file_bytes
+                except FileNotFoundError:
+                    pass
+                try:
+                    path.parent.rmdir()
+                except OSError:
+                    pass
+            conn.execute("DELETE FROM bigrams WHERE unit_a_id=? OR unit_b_id=?", (unit_id, unit_id))
+            conn.execute("DELETE FROM prompts WHERE exact_unit_id=?", (unit_id,))
+            conn.execute("DELETE FROM units WHERE unit_id=?", (unit_id,))
+            self._touch_times.pop(unit_id, None)
+        conn.commit()
+        if vacuum and (victims or victim_bigrams):
+            conn.execute("VACUUM")
+        conn.close()
+        if victims:
+            self._embedding_index_dirty = True
+        return {
+            "removed_entries": len(victims),
+            "removed_bigrams": len(victim_bigrams),
+            "removed_bytes": removed_bytes,
+            "remaining_entries": remaining_entries,
+            "remaining_bytes": remaining_bytes,
+        }
 
     def record_prompt(
         self,
@@ -393,7 +597,10 @@ class LatentCache:
             return None
         data = load_file(str(path))
         key = f"latent_t{step_idx}"
-        return data.get(key)
+        value = data.get(key)
+        if value is not None:
+            self._touch_unit(unit.unit_id)
+        return value
 
     def load_text_embedding(self, unit: VisualUnit) -> torch.Tensor | None:
         d = self._unit_path(unit)
@@ -401,7 +608,10 @@ class LatentCache:
         if not path.exists():
             return None
         data = load_file(str(path))
-        return data.get("text_embedding")
+        value = data.get("text_embedding")
+        if value is not None:
+            self._touch_unit(unit.unit_id)
+        return value
 
     def load_text_embedding_full(self, unit: VisualUnit) -> torch.Tensor | None:
         d = self._unit_path(unit)
@@ -409,7 +619,10 @@ class LatentCache:
         if not path.exists():
             return None
         data = load_file(str(path))
-        return data.get("text_embedding_full")
+        value = data.get("text_embedding_full")
+        if value is not None:
+            self._touch_unit(unit.unit_id)
+        return value
 
     def load_all_latents(self, unit: VisualUnit) -> dict[int, torch.Tensor]:
         d = self._unit_path(unit)
@@ -422,6 +635,8 @@ class LatentCache:
             if k.startswith("latent_t"):
                 step = int(k[len("latent_t"):])
                 result[step] = v
+        if result:
+            self._touch_unit(unit.unit_id)
         return result
 
     def find_nearest(

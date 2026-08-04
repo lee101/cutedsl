@@ -105,6 +105,79 @@ class TestLatentCache:
         assert [text for _, text, _ in results] == ["cat", "dog", "car"]
         assert len(results) == 3
 
+    def test_bounded_cache_evicts_least_recently_used_unit(self):
+        cache = LatentCache(
+            tempfile.mkdtemp(),
+            resolution=(512, 512),
+            max_entries=2,
+            prune_interval_s=0,
+        )
+        first = VisualUnit.from_text("first")
+        second = VisualUnit.from_text("second")
+        third = VisualUnit.from_text("third")
+        latent = {0: torch.randn(1, 1, 2, 2)}
+
+        cache.store_latents(first, latent)
+        cache.store_latents(second, latent)
+        assert cache.load_latent(first, 0) is not None
+        cache.store_latents(third, latent)
+
+        assert cache.has_unit(first)
+        assert not cache.has_unit(second)
+        assert cache.has_unit(third)
+        assert cache.stats()["num_units"] == 2
+
+    def test_prune_constrains_index_paths_to_resolution_directory(self):
+        cache = LatentCache(tempfile.mkdtemp(), resolution=(512, 512))
+        unit = VisualUnit.from_text("unsafe-index")
+        cache.store_latents(unit, {0: torch.randn(1, 1, 2, 2)})
+        outside = Path(tempfile.mkdtemp()) / "keep.safetensors"
+        outside.write_bytes(b"keep")
+        conn = cache._conn()
+        conn.execute("UPDATE units SET file_path=? WHERE unit_id=?", (str(outside), unit.unit_id))
+        conn.commit()
+        conn.close()
+
+        result = cache.prune(max_entries=1, max_bytes=1)
+
+        assert result["removed_entries"] == 1
+        assert outside.read_bytes() == b"keep"
+
+    def test_prune_removes_bigram_file_when_a_dependency_is_evicted(self):
+        cache = LatentCache(tempfile.mkdtemp(), resolution=(512, 512))
+        first = VisualUnit.from_text("first")
+        second = VisualUnit.from_text("second")
+        latent = {0: torch.randn(1, 1, 2, 2)}
+        cache.store_latents(first, latent)
+        cache.store_latents(second, latent)
+        cache.store_bigram(first, second, latent)
+        bigram_path = cache._units_dir / f"bigram_{cache.bigram_id(first, second)}" / "latents.safetensors"
+        assert bigram_path.exists()
+
+        result = cache.prune(max_entries=1)
+
+        assert result["removed_entries"] == 1
+        assert result["removed_bigrams"] == 1
+        assert not bigram_path.exists()
+        assert cache.stats()["num_bigrams"] == 0
+
+    def test_byte_limit_reclaims_old_bigram_before_single_units(self):
+        cache = LatentCache(tempfile.mkdtemp(), resolution=(512, 512))
+        first = VisualUnit.from_text("first")
+        second = VisualUnit.from_text("second")
+        latent = {0: torch.randn(1, 1, 8, 8)}
+        cache.store_latents(first, latent)
+        cache.store_latents(second, latent)
+        cache.store_bigram(first, second, latent)
+        unit_bytes = sum(path.stat().st_size for path in cache._units_dir.glob("*/latents.safetensors") if "bigram_" not in path.parent.name)
+
+        result = cache.prune(max_entries=10, max_bytes=unit_bytes)
+
+        assert result["removed_entries"] == 0
+        assert result["removed_bigrams"] == 1
+        assert cache.stats()["num_units"] == 2
+        assert cache.stats()["num_bigrams"] == 0
+
     def test_stats(self):
         unit = VisualUnit.from_text("tree")
         self.cache.store_latents(unit, {0: torch.randn(16, 1, 64, 64), 1: torch.randn(16, 1, 64, 64)})

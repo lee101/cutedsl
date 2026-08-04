@@ -60,6 +60,30 @@ def test_activate_same_is_noop(transformer, tmp_path):
     assert not swapper.activate(ids[0])["swapped"]
 
 
+def test_bf16_fused_path_is_used_for_single_adapter(transformer, tmp_path, monkeypatch):
+    registry, ids = _registry_with(tmp_path)
+    monkeypatch.setenv("CUTELORAS_FUSED_BF16", "1")
+    import cuteloras.fused_apply as fused_apply
+
+    original = fused_apply.fused_lora_delta
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(kwargs.get("compute_dtype"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fused_apply, "fused_lora_delta", counted)
+    swapper = LoRASwapper(transformer, registry, pin_snapshots=False, pin_factors=False)
+    before = copy.deepcopy(transformer.state_dict())
+    info = swapper.activate(ids[0])
+
+    assert info["params"] == 4
+    assert calls == [torch.bfloat16] * 4
+    swapper.deactivate()
+    for key, value in transformer.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
 def test_scale_composition(transformer, tmp_path):
     registry, ids = _registry_with(tmp_path)
     registry.get(ids[0]).scale = 0.5
@@ -162,6 +186,34 @@ def test_unresolvable_adapter_fails_instead_of_claiming_activation(transformer, 
     with pytest.raises(RuntimeError, match="zero parameters"):
         swapper.activate("bad")
     assert swapper.active == ()
+
+
+def test_switch_to_unresolvable_adapter_restores_nothing_and_keeps_valid_active(transformer, tmp_path):
+    """Removing the old adapter must not count as applying the new adapter."""
+    from safetensors.torch import save_file
+    import pytest
+
+    registry, ids = _registry_with(tmp_path)
+    bad_path = tmp_path / "bad-switch.safetensors"
+    save_file(
+        {
+            "base_model.model.missing.module.lora_A.weight": torch.randn(4, 32),
+            "base_model.model.missing.module.lora_B.weight": torch.randn(32, 4),
+        },
+        str(bad_path),
+    )
+    registry.add(LoRARecord(id="bad", path=str(bad_path)))
+    swapper = LoRASwapper(transformer, registry, pin_snapshots=False, pin_factors=False)
+
+    swapper.activate(ids[0])
+    active_state = copy.deepcopy(transformer.state_dict())
+
+    with pytest.raises(RuntimeError, match="zero parameters"):
+        swapper.activate("bad")
+
+    assert swapper.active == ((ids[0], 1.0),)
+    for key, value in transformer.state_dict().items():
+        assert torch.equal(value, active_state[key]), key
 
 
 def test_kohya_joint_qkv_applies_to_vanilla_diffusers_transformer(diffusers_transformer, tmp_path):
