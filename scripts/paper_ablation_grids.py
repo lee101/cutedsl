@@ -256,6 +256,36 @@ def _write_tables(output_dir: Path, metrics: dict[str, dict[str, float | str | i
     style_lines.extend([r"\bottomrule", r"\end{tabular}"])
     (output_dir / "table_image_styles.tex").write_text("\n".join(style_lines) + "\n")
 
+    router_lines = [
+        r"\begin{tabular}{@{}crrrrrr@{}}",
+        r"\toprule",
+        r" & \multicolumn{3}{c}{PSNR (dB)} & \multicolumn{3}{c}{SSIM} \\",
+        r"\cmidrule(lr){2-4}\cmidrule(l){5-7}",
+        r"$k$ & learned & Taylor & oracle & learned & Taylor & oracle \\",
+        r"\midrule",
+    ]
+    for draft_k in (1, 2, 3):
+        learned = [metrics[f"k{draft_k}/p{i}/spec"] for i in range(len(PROMPTS))]
+        taylor = [metrics[f"k{draft_k}/p{i}/taylor"] for i in range(len(PROMPTS))]
+        learned_psnr = sum(float(row["psnr_db"]) for row in learned) / len(learned)
+        taylor_psnr = sum(float(row["psnr_db"]) for row in taylor) / len(taylor)
+        oracle_psnr = sum(
+            max(float(left["psnr_db"]), float(right["psnr_db"]))
+            for left, right in zip(learned, taylor)
+        ) / len(learned)
+        learned_ssim = sum(float(row["ssim"]) for row in learned) / len(learned)
+        taylor_ssim = sum(float(row["ssim"]) for row in taylor) / len(taylor)
+        oracle_ssim = sum(
+            max(float(left["ssim"]), float(right["ssim"]))
+            for left, right in zip(learned, taylor)
+        ) / len(learned)
+        router_lines.append(
+            f"{draft_k} & {learned_psnr:.2f} & {taylor_psnr:.2f} & {oracle_psnr:.2f} & "
+            f"{learned_ssim:.3f} & {taylor_ssim:.3f} & {oracle_ssim:.3f} \\\\"
+        )
+    router_lines.extend([r"\bottomrule", r"\end{tabular}"])
+    (output_dir / "table_image_router.tex").write_text("\n".join(router_lines) + "\n")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build paper image ablation grids")

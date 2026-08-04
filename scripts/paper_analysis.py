@@ -152,6 +152,19 @@ def train_table() -> dict:
     }
 
 
+def forecaster_ablation() -> dict:
+    """Five-fold CPU ablation of cheap trajectory predictors."""
+    raw = load_json(RESULTS / "forecaster-ablation.json")
+    if not raw:
+        return {}
+    # Keep the paper-facing analysis compact.  Per-cell scores and fitted
+    # coefficients remain available in the separately published raw result.
+    return {
+        "protocol": raw.get("protocol", {}),
+        "summary": raw.get("summary", {}),
+    }
+
+
 def tex_escape(text: str) -> str:
     return text.replace("_", r"\_").replace("%", r"\%").replace("&", r"\&")
 
@@ -194,6 +207,29 @@ def write_tables(data: dict, out_dir: Path) -> None:
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_gap.tex").write_text("\n".join(lines) + "\n")
 
+    forecaster = data.get("forecaster", {}).get("summary", {})
+    lines = [
+        r"\begin{tabular}{@{}crrrrr@{}}",
+        r"\toprule",
+        r"$k$ & Taylor-1 & avg. velocity & Taylor-2 & scaled momentum & two-delta fit \\",
+        r"\midrule",
+    ]
+    for draft_k in sorted(forecaster, key=int):
+        methods = forecaster[draft_k]["methods"]
+        cells = []
+        for method in (
+            "taylor1",
+            "average_velocity",
+            "taylor2",
+            "scaled_momentum",
+            "two_delta_fit",
+        ):
+            value = methods[method]
+            cells.append(f"{value['mean']:.3f}$\\pm${value['std']:.3f}")
+        lines.append(f"{draft_k} & {' & '.join(cells)} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_forecaster_ablation.tex").write_text("\n".join(lines) + "\n")
+
     # Macros so prose can cite a number without anyone retyping it.
     macros = []
     k3 = e2e.get(3, {})
@@ -231,12 +267,20 @@ def main() -> int:
     ap.add_argument("--out", default=str(REPO / "paper" / "generated"))
     args = ap.parse_args()
 
-    data = {"e2e": e2e_table(), "gap": gap_table(), "train": train_table()}
+    data = {
+        "e2e": e2e_table(),
+        "gap": gap_table(),
+        "train": train_table(),
+        "forecaster": forecaster_ablation(),
+    }
     out_dir = Path(args.out)
     write_tables(data, out_dir)
     (out_dir / "analysis.json").write_text(json.dumps(data, indent=2, default=str) + "\n")
 
-    print(f"wrote {out_dir}/table_e2e.tex, table_gap.tex, macros.tex, analysis.json")
+    print(
+        f"wrote {out_dir}/table_e2e.tex, table_gap.tex, "
+        "table_forecaster_ablation.tex, macros.tex, analysis.json"
+    )
     for k, e in sorted(data["e2e"].items()):
         print(f"  k={k}: reported {e['reported_mean_speedup_spec']}x -> corrected "
               f"{e['speedup_spec']}x (dropped {e['n_warmup']} warm-up row"
