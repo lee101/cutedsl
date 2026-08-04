@@ -21,6 +21,107 @@ class TrajectoryStats:
     repel_neighbors_used: int = 0
     virtual_steps_applied: int = 0
     mean_similarity: float = 0.0
+    candidates_scanned: int = 0
+    mean_motion_similarity: float = 0.0
+
+
+def _motion_descriptor(delta: torch.Tensor, size: int = 8) -> torch.Tensor:
+    """Compact a latent movement for cheap cosine-similarity pruning."""
+    value = delta.detach().float()
+    if value.ndim < 2:
+        value = value.reshape(1, 1, -1, 1)
+    else:
+        value = value.reshape(-1, 1, value.shape[-2], value.shape[-1])
+    pooled = torch.nn.functional.adaptive_avg_pool2d(value, (size, size)).flatten()
+    return torch.nn.functional.normalize(pooled, dim=0, eps=1e-8)
+
+
+def forecast_with_pruned_knn_residual(
+    cache: LatentCache,
+    current_latent: torch.Tensor,
+    previous_latent: torch.Tensor,
+    embedding: torch.Tensor,
+    start_step: int,
+    horizon: int,
+    *,
+    top_k: int = 8,
+    candidate_pool: int = 16,
+    momentum_scale: float = 1.0,
+    local_weight: float = 1.0,
+    residual_weight: float = 1.0,
+    motion_weight: float = 0.5,
+    temperature: float = 0.1,
+) -> tuple[torch.Tensor, dict]:
+    """Forecast with local momentum plus motion-pruned neighbour residuals.
+
+    Prompt similarity selects a small candidate pool. Agreement between the
+    query and candidate's observed motion prunes it to ``top_k`` records. Only
+    the candidate correction away from calibrated momentum is transported.
+    """
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    if top_k <= 0 or candidate_pool <= 0:
+        raise ValueError("top_k and candidate_pool must be positive")
+    if not 0.0 <= motion_weight <= 1.0:
+        raise ValueError("motion_weight must be in [0, 1]")
+    if temperature <= 0.0:
+        raise ValueError("temperature must be positive")
+
+    query_delta = current_latent.float() - previous_latent.float()
+    local_move = momentum_scale * horizon * query_delta
+    candidates = cache.find_nearest(embedding, top_k=max(top_k, candidate_pool))
+    query_motion = _motion_descriptor(query_delta)
+    rows = []
+    for unit_id, text, prompt_similarity in candidates:
+        unit = VisualUnit(text=text, unit_id=unit_id)
+        previous = cache.load_latent(unit, start_step - 1)
+        current = cache.load_latent(unit, start_step)
+        target = cache.load_latent(unit, start_step + horizon)
+        if previous is None or current is None or target is None:
+            continue
+        if current.shape != current_latent.shape:
+            continue
+        neighbor_delta = current.float() - previous.float()
+        motion_similarity = float(
+            torch.dot(query_motion, _motion_descriptor(neighbor_delta))
+        )
+        score = (
+            (1.0 - motion_weight) * float(prompt_similarity)
+            + motion_weight * motion_similarity
+        )
+        residual = (
+            target.float()
+            - current.float()
+            - momentum_scale * horizon * neighbor_delta
+        )
+        rows.append((score, float(prompt_similarity), motion_similarity, residual))
+
+    rows.sort(key=lambda row: row[0], reverse=True)
+    selected = rows[:top_k]
+    stats = TrajectoryStats(candidates_scanned=len(rows))
+    if not selected:
+        prediction = current_latent.float() + local_weight * local_move
+        return prediction.to(current_latent.dtype), stats.__dict__
+
+    scores = torch.tensor([row[0] for row in selected], dtype=torch.float32)
+    weights = torch.softmax(scores / temperature, dim=0)
+    residuals = torch.stack([row[3] for row in selected])
+    weight_shape = (len(selected),) + (1,) * (residuals.ndim - 1)
+    retrieved_residual = (residuals * weights.view(weight_shape)).sum(dim=0)
+    prediction = (
+        current_latent.float()
+        + local_weight * local_move
+        + residual_weight * retrieved_residual
+    )
+    stats.neighbors_used = len(selected)
+    stats.virtual_steps_applied = horizon
+    stats.mean_similarity = float(
+        sum(row[1] for row in selected) / len(selected)
+    )
+    stats.mean_motion_similarity = float(
+        sum(row[2] for row in selected) / len(selected)
+    )
+    return prediction.to(current_latent.dtype), stats.__dict__
 
 
 def _weighted_mean_delta(

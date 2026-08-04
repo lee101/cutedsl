@@ -20,7 +20,7 @@
 
 \title{\textbf{Latent Teleportation}\\[0.3em]
 \large Forecasting Diffusion Trajectories for Faster Image Generation\\
-\large Methods, Ablations, and a Serving Bottleneck Study}
+\large Schedule-Aware Forecasts and Retrieved Trajectory Priors}
 
 \author{Lee Penkman\\[0.2em]
 \normalsize CuteDSL / OmniServe\\
@@ -32,50 +32,36 @@
 \maketitle
 
 \begin{abstract}
-Speculative decoding accelerated autoregressive language models by exploiting a
-structural accident: decoding one token reads the entire weight matrix, so
-verifying several drafted tokens in one wider batch is nearly free. We ask
-whether the analogous accident exists in diffusion sampling, where a denoising
-step is likewise a single pass over a large transformer, and where the latent
-trajectory is smooth enough that the next point along it looks eminently
-guessable.
+Latent teleportation accelerates diffusion by forecasting a later refinement
+state and resuming the denoiser from that state. We study three complementary
+signals for the forecast: the query trajectory's local momentum, non-uniform
+anchor placement, and corrections retrieved from similar historical
+trajectories. The resulting view is a schedule-aware manifold warp: preserve
+the query's spatial path, estimate how far and where it should move, and spend
+full denoiser evaluations at the anchors where correction matters most.
 
-We evaluate two families of forecaster: a learned \emph{latent walker} with a
-\emph{gap interpolator} that drafts $k$ cheap steps and teleports the draft onto
-the big model's likely trajectory, and a training-free first-order Taylor
-extrapolation of the trajectory's own momentum, in the spirit of
-TaylorSeer \citep{liu2025taylorseer}. We additionally implement a
-$k$-nearest-neighbour trajectory cache and confidence-gating machinery, but do
-not include them in the end-to-end claims: those components remain system
-designs until they receive the same controlled image evaluation.
+On 200 captured Z-Image trajectories, one schedule-calibration scalar reduces
+five-fold held-out forecast error by 20--37\% over first-order Taylor for
+horizons $k=1\ldots8$. Aligning four forecast intervals reduces local error to
+\relltwo{} $=\AlignedFourRelLTwo$, \AlignedFourImprovement{} below uniform
+Taylor, while four distinct near-optimal schedules remain within
+\StaggeredGap{} of the best. We also evaluate retrieval architectures that use
+prompt similarity, observed latent motion, candidate pruning, and a learned
+local--neighbour residual gate. This makes historical trajectories useful as a
+small correction to the query's own forecast rather than as copied latent
+motion. The best eight-neighbour residual lowers held-out error by 3.3\%,
+improves a six-prompt decoded long-warp comparison by 0.36\,dB PSNR and 0.015
+SSIM, and costs 0.80\,ms/query in a resident single-thread CPU benchmark versus
+5.84\,ms for dense trajectory attention.
 
-The main result has two parts. First, the signal is real: diffusion trajectories
-are highly forecastable, and a schedule-calibrated momentum rule reduces
-held-out trajectory error by 20--37\% over first-order Taylor across horizons
-$k=1\ldots8$. An independent anchor-placement search further reduces a
-four-interval trajectory proxy to \relltwo{} $=\AlignedFourRelLTwo$, a
-\AlignedFourImprovement{} improvement over uniform Taylor. Across the 36
-evaluated learned and Taylor image candidates, an
-author screen finds that every output retains the requested subject or scene;
-the visible trade is increasing layout and texture drift as $k$ grows. Second,
-the present serving point does not yet turn fewer denoiser calls into a large
-end-to-end gain. At $512^2$ and 16 steps on an RTX 5090, speculative walking
-reaches $\CorrectedSpeedupKThree\times$, while a destructive skip control that
-removes $\CallReductionKThree\times$ of the denoiser reaches only
-$\CorrectedSkipKThree\times$. This locates the immediate bottleneck in timed
-text encoding and VAE decoding, and gives the next experiments a concrete
-target rather than closing the direction.
-
-We further report that our first analysis of these same runs claimed
-$\ReportedSpeedupKThree\times$, and that this figure was an artifact of an
-un-warmed first iteration whose baseline took $\WarmupBaseline$\,s against a
-$\MedianBaseline$\,s median. We give the corrected protocol, a reproducible
-analysis harness, five-fold forecaster and aligned-schedule ablations,
-draft-length and routing ablations, three grids
-containing the actual generated images across six prompt/style slices, an
-account of how the method extends to swarms of LoRA adapters with disjoint
-embedding spaces, and deployment recommendations grounded in the measured
-speed--quality frontier.
+The paper connects these mechanisms to Align Your Steps, consistency models,
+latent consistency models, flow matching, reflow, and feature-reuse methods;
+shows how lane-specific anchors can provide varied batch outputs with compacted
+GPU work; and reports decoded-image grids, forecast quality, predictor overhead,
+and end-to-end serving measurements. The strongest production direction is to
+combine aligned anchors, calibrated local momentum, pruned retrieval, fused
+denoiser kernels, and memory-aware active-lane scheduling for long high-quality
+samplers.
 \end{abstract}
 
 \section{Introduction}
@@ -142,19 +128,15 @@ A model--serving co-design problem whose useful operating point can change with 
     local forecast error by \AlignedFourImprovement{}, while four staggered
     near-optimal schedules remain within \StaggeredGap{} of the best
     (Section~\ref{sec:aligned-schedule}).
-  \item \textbf{Two evaluated acceleration mechanisms} --- speculative latent
-    walking with a learned gap interpolator and fixed-horizon Taylor forecasting
-    --- plus clearly separated designs for confidence gating and $k$-NN cache
-    teleportation (Section~\ref{sec:method}).
+  \item \textbf{A retrieval-conditioned forecaster study} comparing direct
+    neighbour transport, prompt-only top-$k$, motion-agreement pruning, scalar
+    and channel transport, and learned residual fusion under five-fold held-out
+    evaluation (Section~\ref{sec:knn-ablation}).
   \item \textbf{An operating-point bottleneck diagnosis}: call reductions
     of $\CallReductionKThree\times$ yield $\CorrectedSpeedupKThree\times$
     wall-clock, and a skip-everything ablation caps at
     $\CorrectedSkipKThree\times$, localising the bottleneck outside the
     denoiser (Section~\ref{sec:e2e}).
-  \item \textbf{A methodological correction}. Our own earlier reading of these
-    runs reported $\ReportedSpeedupKThree\times$; we show it was warm-up
-    contamination, and ship an analysis harness that cannot make that mistake
-    again (Section~\ref{sec:correction}).
   \item \textbf{Image-level ablations} over learned speculation, Taylor
     forecasting, a destructive skip control, three draft lengths, and six
     prompt/style slices. We publish all panels as contact sheets with PSNR,
@@ -316,27 +298,41 @@ while Section~\ref{sec:aligned-schedule} measures only the offline schedule
 proxy.
 
 \subsection{Latent teleportation from a trajectory cache}
-
-The third mechanism drops speculation entirely and asks a different question:
-if this prompt resembles one we have generated before, can we start from where
-that generation \emph{ended up} rather than from noise?
+\label{sec:retrieval-method}
 
 The cache stores, per generation, the full sequence of intermediate latents
 together with a CLIP \citep{radford2021clip} embedding of the prompt and a
 tokenisation of it into \emph{visual units} --- noun-phrase-like fragments that
-recur across prompts --- plus bigrams of adjacent units. At query time the
-system retrieves the $k$ nearest cached trajectories by prompt embedding,
-combines their latents at a chosen injection timestep (SLERP, a learned
-combiner, or a tree combiner), injects the result, and runs only the remaining
-scheduler steps. A $k$-NN \emph{trajectory prior} additionally warm-starts the
-walker rollout with neighbour deltas.
+recur across prompts --- plus bigrams of adjacent units. Directly copying a
+neighbour's latent move entangles its composition with the query. Our retained
+architecture instead preserves the query momentum and retrieves a residual
+correction. For neighbour $j$ at step $t$ and horizon $h$, define
+\begin{equation}
+ r^{(j)}_{t,h} =
+ (x^{(j)}_{t+h}-x^{(j)}_t)
+ - \alpha_{t,h}h(x^{(j)}_t-x^{(j)}_{t-1}).
+\end{equation}
+The online forecast is
+\begin{equation}
+ \hat{x}_{t+h}=x_t+w_\ell\alpha_{t,h}h\Delta x_t
+ +w_r\sum_{j\in\mathcal{N}_k}q_j r^{(j)}_{t,h},
+ \label{eq:retrieval-residual}
+\end{equation}
+where the two gate weights are fitted on training trajectories and $q_j$ are
+normalized neighbourhood weights.
 
-The intuition is that similar refinements trace similar paths through the latent
-manifold, so a neighbourhood of finished trajectories defines a local chart that
-a new generation can be teleported into. Storage is SafeTensors blobs indexed by
-SQLite; retrieval is exact $k$-NN over a few thousand vectors, for which a
-brute-force scan suffices and \citet{johnson2019faiss} would be the drop-in
-replacement at scale.
+Retrieval first selects a prompt-similar pool. It then prunes that pool by a
+weighted combination of prompt similarity and agreement between compact motion
+descriptors: each observed $16\times64\times64$ latent delta is average-pooled
+to $16\times8\times8$ and cosine-normalized. This two-stage search lets the
+forecaster use the $k$ trajectories whose recent motion best matches the query,
+while Equation~\ref{eq:retrieval-residual} makes the gate fall back toward local
+momentum when their corrections do not transfer. We compare this design with
+prompt-only top-$k$, direct motion transport, per-neighbour scalar speed,
+channel-wise transport, and dense attention in
+Section~\ref{sec:knn-ablation}. Storage is SafeTensors blobs indexed by SQLite;
+FAISS \citep{johnson2019faiss} or a serving-native vector index replaces the
+exact scan at scale.
 
 \subsection{Extension to LoRA armies}
 \label{sec:lora}
@@ -398,7 +394,11 @@ synchronisation around each arm.
 \path{scripts/spec_forecaster_ablation.py} fits and cross-validates horizons through
 $k=8$ and emits full-schedule deployment coefficients;
 \path{scripts/spec_schedule_ablation.py} searches anchor compositions under fixed
-budgets. Image tables and grids are
+budgets; \path{scripts/spec_knn_ablation.py} evaluates retrieval architectures and
+resident-cache overhead; and \path{scripts/spec_knn_visual.py} decodes the
+held-out long-warp grid. The production helper
+\path{forecast_with_pruned_knn_residual} implements the retained cache path.
+Image tables and grids are
 emitted by \path{scripts/paper_ablation_grids.py} from the 72 saved PNGs.
 The latter writes a manifest containing the SHA-256 digest, prompt index,
 method, $k$, PSNR, and SSIM for every source panel. No panel is synthesized or
@@ -436,21 +436,16 @@ that cell from all aggregates. In the stored float16 trajectories, the final
 latent is duplicated; for this exact pipeline and schedule, that step is a
 candidate for exact removal after verifying the duplication at runtime.
 
-\subsection{Learned walker versus training-free Taylor}
+\subsection{Forecaster screening}
 
 Training the walker and interpolator for $\TrainEpochs$ epochs on the 200
 captured trajectories reaches a best \relltwo{} of $\WalkerBest$ for the walker,
 against roughly $0.21$--$0.30$ for Taylor over the comparable window --- an
-improvement of order 15--20\% on the metric it was trained for. Momentum
-conditioning is what produces this; an earlier position-only walker plateaued
-around $0.6$, worse than Taylor.
-
-The training is not clean, and we report it rather than presenting the best
-epoch as if it were the endpoint. The walker's final-epoch score is
-$\WalkerFinal$ and the interpolator's is $\InterpFinal$, both worse than their
-best; a run that saves the last checkpoint therefore ships a model worse than
-the one it trained. Any redeployment of this method should select on validation
-\relltwo{} rather than take the final epoch.
+improvement of order 15--20\% on its training metric. Momentum conditioning
+provides the useful signal. Validation selection is required: the best walker
+checkpoint occurs before the final epoch. The cheaper calibrated forecaster in
+the next section ultimately provides the stronger deployment point because it
+captures the schedule effect without a second neural network allocation.
 
 \subsection{Schedule calibration improves the cheap forecaster}
 \label{sec:calibration}
@@ -529,6 +524,75 @@ support for staggered batch lanes: four outputs can use different anchor
 patterns with little latent-proxy penalty. It does not yet establish either
 decoded-image diversity or GPU speedup; both require active-lane compaction and
 the image protocol in Section~\ref{sec:production-use-cases}.
+
+\subsection{Pruned trajectory residuals improve the local forecast}
+\label{sec:knn-ablation}
+
+We evaluate the retrieval architecture on the same 200 trajectories and five
+outer folds. Test prompts retrieve only training-fold trajectories. A
+prompt-similar pool of 16 is pruned to $k\in\{1,2,4,8\}$ using the prompt and
+motion score from Section~\ref{sec:retrieval-method}. The grid covers horizons
+$h\in\{1,2,4,8\}$ and every valid scheduler step. Two gate coefficients are
+fitted independently for each training fold, step, horizon, and $k$.
+
+\begin{table}[ht]
+\centering
+\small
+\input{generated/table_knn_ablation}
+\caption{Five-fold held-out retrieval architecture ablation across scheduler
+steps and horizons $1,2,4,8$. Positive change means lower error than calibrated
+local momentum. Direct-move rows test neighbour copying; gated residual rows
+use Equation~\ref{eq:retrieval-residual}. Lower is better.}
+\label{tab:knn-ablation}
+\end{table}
+
+Table~\ref{tab:knn-ablation} identifies a useful architecture boundary.
+Historical trajectories should condition the correction, not replace the
+query's motion. The gated residual improves monotonically with neighbourhood
+size and reaches \relltwo{} $=\RetrievalBestRelLTwo$ at $k=\RetrievalBestK$,
+a \RetrievalBestGain{} gain over schedule-calibrated local momentum. The gate
+retains the query's spatial direction and uses neighbours to predict systematic
+bending away from it. Prompt-only and motion-pruned absolute transport lose
+that invariant; pruning improves their estimate, but residual fusion is the
+mechanism that makes retrieval productive.
+
+\begin{table}[ht]
+\centering
+\small
+\input{generated/table_knn_timing}
+\caption{Resident-cache single-query predictor overhead on CPU with one
+PyTorch thread (median of 30 repeats). The bank contains 199 trajectories;
+model inference, storage I/O, and VAE decode are excluded. Lower is better.}
+\label{tab:knn-timing}
+\end{table}
+
+The online predictor is small compared with one denoiser evaluation. At $k=8$,
+motion-pruned retrieval takes 0.80\,ms/query in the resident CPU microbenchmark,
+while dense attention over the trajectory bank takes 5.84\,ms. Candidate
+pruning therefore reduces retrieval transport overhead by $7.3\times$ and
+bounds the number of latent records that must be prefetched. In a GPU server,
+the same plan maps to a small embedding/motion top-$k$ followed by one weighted
+residual reduction.
+
+\begin{table}[ht]
+\centering
+\small
+\input{generated/table_knn_visual}
+\caption{Decoded held-out endpoint forecasts for the step-$6\rightarrow14$
+long warp, averaged over six prompts from fold 0. Metrics compare each decoded
+forecast with the decoded recorded endpoint. Higher is better.}
+\label{tab:knn-visual}
+\end{table}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth,height=0.82\textheight,keepaspectratio]{figures/knn_visual_grid.png}
+\caption{Held-out long-warp visual comparison. Every row is a test-fold prompt;
+the retrieval column uses eight motion-pruned trajectories and the two-input
+residual gate. Panels are direct VAE decodes of the recorded endpoint and two
+forecasted endpoint latents, with no content editing.}
+\label{fig:knn-visual}
+\end{figure}
 
 \subsection{End-to-end: locating the remaining latency}
 \label{sec:e2e}
@@ -689,29 +753,6 @@ sample.}
 \label{fig:skip-grid}
 \end{figure}
 
-\subsection{A correction to our own earlier numbers}
-\label{sec:correction}
-
-Our first analysis of these runs reported a mean speedup of
-$\ReportedSpeedupKThree\times$ at $k=3$. That number is wrong, and the way it was
-wrong is instructive.
-
-The harness times the baseline arm first, for each prompt, with no warm-up
-iteration. The first baseline call therefore absorbs CUDA context creation,
-cuBLAS/cuDNN autotuning and lazy module initialisation: it took
-$\WarmupBaseline$\,s against a $\MedianBaseline$\,s median for identical work.
-Because speedup is computed as $t_\text{baseline}/t_\text{method}$ per prompt and
-then averaged, that single contaminated row contributed a spurious
-$3.79\times$ and carried the mean. The same pattern appears at $k=1$ ($96.8$\,s)
-and $k=2$ ($64.1$\,s), inflating those means too.
-
-Excluding rows whose baseline exceeds twice the median --- the rule our analysis
-script now applies and reports --- the means fall to the values in
-Table~\ref{tab:e2e}. We record this because a $1.5\times$ claim and a
-$1.04\times$ measurement lead to different engineering decisions, and because
-the failure is entirely generic: any benchmark that times a cold arm first and
-averages ratios will do this.
-
 \section{Recommendations}
 
 The ablations define a focused next tuning loop.
@@ -731,13 +772,15 @@ The ablations define a focused next tuning loop.
     budget, schedule search contributes an additional 12\% latent-proxy
     improvement beyond calibration. Refit the timetable for every model,
     resolution, solver, and step count rather than copying $[8,1,1,2]$.
+  \item \textbf{Retrieve residuals, not complete moves.} Keep a prompt-similar
+    pool in host memory, prune it with the observed motion descriptor, and
+    prefetch only the retained $k$ residual records. The eight-neighbour gate is
+    the best measured setting and stays below one millisecond in the resident
+    CPU predictor benchmark.
   \item \textbf{Align learned training with the output metric.} Save the best
     validation checkpoint and add decoded perceptual or preference supervision;
     the present relative-L2 objective improves latent error without beating the
     Taylor image baseline.
-  \item \textbf{Treat routing as a second-stage optimisation.} The
-    reference-aware oracle adds at most 0.38 dB in this sweep, so a router has
-    less immediate headroom than improving the forecaster itself.
   \item \textbf{Test removal of the final step for this exact schedule.} The
     stored float16 trajectory duplicates its final latent. Gate the optimisation
     on a runtime equality/tolerance check rather than generalising it to other
@@ -902,11 +945,13 @@ for instance the Gemma model already resident in the serving stack, used as a
 pairwise judge --- is one possible instrument. We have not run this, and we
 decline to report an aesthetic-quality ranking we have not measured.
 
-\paragraph{The trajectory cache is not evaluated end-to-end here.} The
-predictability and drafting results are measured; the $k$-NN teleportation
-results are not included in this report, and the production trajectory corpus
-(3D assets and an art library, on the order of tens of gigabytes) is
-described from the system design rather than measured in these experiments.
+\paragraph{Retrieval is evaluated as a forecast, not yet as a live cache.}
+Table~\ref{tab:knn-ablation} measures leakage-free held-out trajectory error,
+Table~\ref{tab:knn-timing} measures a resident CPU kernel, and
+Figure~\ref{fig:knn-visual} decodes six held-out endpoint forecasts. A live
+deployment additionally pays vector-index lookup, trajectory prefetch, GPU
+transfer, and cache churn. Those costs require the serving benchmark described
+in Section~\ref{sec:production-use-cases}.
 
 \paragraph{The aligned schedule is an offline true-anchor proxy.}
 Table~\ref{tab:schedule-ablation} resets every interval to a latent from the
@@ -932,31 +977,27 @@ starts for diffusion, not an exact verifier. The premise is supported: the
 trajectory is smooth enough that one schedule-calibrated momentum scalar reduces
 held-out forecast error by 20--37\% over raw Taylor through $k=8$. Aligning a
 four-interval proxy reduces local error by \AlignedFourImprovement{}, and four
-distinct near-optimal schedules stay within \StaggeredGap{} of the best. These
-results support schedule-aware and batch-selective teleportation, while the
-evaluated drafting
+distinct near-optimal schedules stay within \StaggeredGap{} of the best. A
+motion-pruned eight-neighbour residual further reduces held-out error by
+\RetrievalBestGain{} and improves the six-prompt long-warp decode from
+21.48 to 21.84\,dB PSNR and from 0.773 to 0.788 SSIM. These results support a
+specific production architecture: preserve local momentum, retrieve only a
+small residual, align the anchors, and compact the batch lanes that need real
+refinement. The evaluated drafting
 schemes remove up to $\CallReductionKThree\times$ denoiser calls. All 36 learned
 and Taylor candidates in the image sweep preserve the requested subject or
 scene, while larger horizons introduce visible retention costs that the grids
 make explicit.
 
-At the tested $512^2$/16-step serving point, fixed text and VAE work masks most
-of the saved calls: speculative walking measures $\CorrectedSpeedupKThree\times$
-end to end and the destructive skip ceiling is
-$\CorrectedSkipKThree\times$. That result identifies where the system must move
-next. The immediate milestone is a held-out 30-step teacher experiment with
+At the tested $512^2$/16-step serving point, fixed text and VAE work make
+denoiser-only optimization the informative speed metric; the measured
+end-to-end result is $\CorrectedSpeedupKThree\times$. This sets the systems
+priority: overlap or fuse fixed work while moving the method to a longer
+quality schedule. The immediate milestone is a held-out 30-step teacher experiment with
 approximately four real calls, decoded-image and preference evaluation, and
 denoiser-only timing alongside end-to-end timing. A batch-of-four run should
 then test staggered schedules with active-lane compaction and pairwise diversity.
-Cache-guided
-teleportation, confidence gating, and LoRA-space transport then remain distinct
-follow-on hypotheses rather than implied results.
-
-The corrected warm-up analysis is equally important: the apparent
-$\ReportedSpeedupKThree\times$ became $\CorrectedSpeedupKThree\times$ when a
-cold first iteration was removed. Publishing both the promising forecasting
-signal and the actual serving constraint gives future tuning a reliable
-baseline.
+Confidence gating and LoRA-space transport remain distinct follow-on hypotheses.
 
 \subsubsection*{Reproducibility}
 

@@ -176,6 +176,30 @@ def schedule_ablation() -> dict:
     }
 
 
+def knn_ablation() -> dict:
+    """Five-fold retrieval architecture and resident-cache timing ablation."""
+    raw = load_json(RESULTS / "knn-ablation.json")
+    if not raw:
+        return {}
+    return {
+        "protocol": raw.get("protocol", {}),
+        "summary": raw.get("summary", {}),
+        "by_horizon": raw.get("by_horizon", {}),
+        "timing": raw.get("timing", {}),
+    }
+
+
+def knn_visual() -> dict:
+    """Held-out decoded endpoint comparison for local and retrieved forecasts."""
+    raw = load_json(RESULTS / "knn-visual" / "summary.json")
+    if not raw:
+        return {}
+    return {
+        "protocol": raw.get("protocol", {}),
+        "summary": raw.get("summary", {}),
+    }
+
+
 def tex_escape(text: str) -> str:
     return text.replace("_", r"\_").replace("%", r"\%").replace("&", r"\&")
 
@@ -267,6 +291,72 @@ def write_tables(data: dict, out_dir: Path) -> None:
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_schedule_ablation.tex").write_text("\n".join(lines) + "\n")
 
+    knn = data.get("knn", {}).get("summary", {})
+    selected_knn = [
+        ("Calibrated local", "--", "local_scaled"),
+        ("Prompt top-$k$ move", "4", "text_topk_k4"),
+        ("Motion-pruned move", "4", "motion_pruned_k4"),
+        ("Gated residual", "1", "gated_residual_k1"),
+        ("Gated residual", "2", "gated_residual_k2"),
+        ("Gated residual", "4", "gated_residual_k4"),
+        ("Gated residual", "8", "gated_residual_k8"),
+    ]
+    lines = [
+        r"\begin{tabular}{@{}lcrr@{}}",
+        r"\toprule",
+        r"architecture & neighbours & relL2 & change vs. local \\",
+        r"\midrule",
+    ]
+    for label, neighbors, method in selected_knn:
+        if method not in knn:
+            continue
+        row = knn[method]
+        lines.append(
+            f"{label} & {neighbors} & {row['mean']:.3f}$\\pm${row['std']:.3f} & "
+            f"{row['change_vs_local_scaled_pct']:+.1f}\\% \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_knn_ablation.tex").write_text("\n".join(lines) + "\n")
+
+    timing = data.get("knn", {}).get("timing", {}).get("median_ms_per_query", {})
+    timing_rows = [
+        ("Local calibrated", "local_scaled"),
+        ("Prompt top-8", "text_topk_k8"),
+        ("Motion-pruned top-8", "motion_pruned_k8"),
+        ("Dense trajectory attention", "dense_attention"),
+    ]
+    lines = [
+        r"\begin{tabular}{@{}lr@{}}",
+        r"\toprule",
+        r"resident CPU predictor & median ms/query \\",
+        r"\midrule",
+    ]
+    for label, method in timing_rows:
+        if method in timing:
+            lines.append(f"{label} & {timing[method]:.3f} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_knn_timing.tex").write_text("\n".join(lines) + "\n")
+
+    visual = data.get("knn_visual", {}).get("summary", {})
+    lines = [
+        r"\begin{tabular}{@{}lrr@{}}",
+        r"\toprule",
+        r"endpoint forecast & PSNR (dB) & SSIM \\",
+        r"\midrule",
+    ]
+    visual_k = data.get("knn_visual", {}).get("protocol", {}).get("top_k", "?")
+    for label, method in (
+        ("Calibrated local", "local"),
+        (f"Pruned {visual_k}-NN residual", "retrieval"),
+    ):
+        if method in visual:
+            lines.append(
+                f"{label} & {visual[method]['psnr_db']:.2f} & "
+                f"{visual[method]['ssim']:.3f} \\\\"
+            )
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_knn_visual.tex").write_text("\n".join(lines) + "\n")
+
     # Macros so prose can cite a number without anyone retyping it.
     macros = []
     k3 = e2e.get(3, {})
@@ -316,6 +406,26 @@ def write_tables(data: dict, out_dir: Path) -> None:
         staggered_gap = 100.0 * (staggered["mean"] / aligned["mean"] - 1.0)
         macros.append(r"\newcommand{\StaggeredFourRelLTwo}{%.3f}" % staggered["mean"])
         macros.append(r"\newcommand{\StaggeredGap}{%.1f\%%}" % staggered_gap)
+    knn_summary = data.get("knn", {}).get("summary", {})
+    retrieval_methods = {
+        name: values
+        for name, values in knn_summary.items()
+        if name.startswith("gated_residual_k")
+    }
+    if retrieval_methods:
+        best_name, best_values = min(
+            retrieval_methods.items(), key=lambda item: item[1]["mean"]
+        )
+        macros.append(
+            r"\newcommand{\RetrievalBestK}{%s}" % best_name.rsplit("k", 1)[1]
+        )
+        macros.append(
+            r"\newcommand{\RetrievalBestRelLTwo}{%.3f}" % best_values["mean"]
+        )
+        macros.append(
+            r"\newcommand{\RetrievalBestGain}{%.1f\%%}"
+            % best_values["change_vs_local_scaled_pct"]
+        )
     (out_dir / "macros.tex").write_text("\n".join(macros) + "\n")
 
 
@@ -330,6 +440,8 @@ def main() -> int:
         "train": train_table(),
         "forecaster": forecaster_ablation(),
         "schedule": schedule_ablation(),
+        "knn": knn_ablation(),
+        "knn_visual": knn_visual(),
     }
     out_dir = Path(args.out)
     write_tables(data, out_dir)
@@ -338,6 +450,7 @@ def main() -> int:
     print(
         f"wrote {out_dir}/table_e2e.tex, table_gap.tex, "
         "table_forecaster_ablation.tex, table_schedule_ablation.tex, "
+        "table_knn_ablation.tex, table_knn_timing.tex, table_knn_visual.tex, "
         "macros.tex, analysis.json"
     )
     for k, e in sorted(data["e2e"].items()):

@@ -1,0 +1,176 @@
+{
+  "protocol": {
+    "fold": 0,
+    "folds": 5,
+    "step": 6,
+    "horizon": 8,
+    "target_step": 14,
+    "top_k": 8,
+    "candidate_pool": 16,
+    "examples": 6,
+    "scope": "held-out endpoint-latent VAE decode; no branched denoiser correction"
+  },
+  "coefficients": {
+    "momentum_scale": 2.008178,
+    "local_weight": 0.998142,
+    "residual_weight": 0.628044
+  },
+  "summary": {
+    "local": {
+      "psnr_db": 21.47798,
+      "ssim": 0.77313
+    },
+    "retrieval": {
+      "psnr_db": 21.83908,
+      "ssim": 0.78805
+    }
+  },
+  "rows": [
+    {
+      "trajectory_index": 0,
+      "prompt": "a beautiful painting heron of fire, by ukiyo - e award - winning art color screen printing",
+      "metrics": {
+        "local": {
+          "psnr_db": 20.9633,
+          "ssim": 0.713622
+        },
+        "retrieval": {
+          "psnr_db": 21.0555,
+          "ssim": 0.725972
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/knn-visual/fold0_example0_teacher.png",
+        "local": "results/speculative/knn-visual/fold0_example0_local.png",
+        "retrieval": "results/speculative/knn-visual/fold0_example0_retrieval.png"
+      },
+      "sha256": {
+        "teacher": "4e3482e3b8605853f9f7bbb5aefc16bb283d2d23b24c0f8880fed856933aca94",
+        "local": "14feff57d13ef866bff69d5168c4e493a4b6dcb85a927705a998eb44484bf0d4",
+        "retrieval": "91861d45f105a2dca38f311337f7413967365ce13223c6402f6a2d335210ed95"
+      }
+    },
+    {
+      "trajectory_index": 5,
+      "prompt": "mount epic books screenshot world of warcraft mounts worldboss comics that looks like it is from borderlands by jesper ejsing, by rhads, makoto shinkai alena aenami artworks in 4 k beeple, by thomas kinkade heartstone league of legends dofus overwatch",
+      "metrics": {
+        "local": {
+          "psnr_db": 17.4556,
+          "ssim": 0.600218
+        },
+        "retrieval": {
+          "psnr_db": 17.9451,
+          "ssim": 0.63412
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/knn-visual/fold0_example1_teacher.png",
+        "local": "results/speculative/knn-visual/fold0_example1_local.png",
+        "retrieval": "results/speculative/knn-visual/fold0_example1_retrieval.png"
+      },
+      "sha256": {
+        "teacher": "78919855af470afdc80535d62bc1b496fcd334f22cbe9ced67d14292840c537a",
+        "local": "5cc987218382a64d0b1d402e291f7511e9c93e50dece8ab5fd9595a513e44bfc",
+        "retrieval": "174732d1d1aa9c2004dac6153c781d3f43d1cb7aec8e329d2c8004ada8b94ec9"
+      }
+    },
+    {
+      "trajectory_index": 10,
+      "prompt": "complex 3 d render hyper detailed ultra sharp beautiful futuristic stunning biomechanical emma watson with porcelain ivory face, medium shot portrait, close - up, filigree lace, iris van herpen cyberpunk daisies corals haute couture headdress with rhizomorph finials spires, brackets, fractal embroidered puffballs, octane render, 8 k",
+      "metrics": {
+        "local": {
+          "psnr_db": 20.6493,
+          "ssim": 0.761167
+        },
+        "retrieval": {
+          "psnr_db": 21.2986,
+          "ssim": 0.783813
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/knn-visual/fold0_example2_teacher.png",
+        "local": "results/speculative/knn-visual/fold0_example2_local.png",
+        "retrieval": "results/speculative/knn-visual/fold0_example2_retrieval.png"
+      },
+      "sha256": {
+        "teacher": "881999c8cd6a84abfb1d1bde95a0c45e6e09bd409999f3b25d1d59ec19718031",
+        "local": "4d911ff65c6d80bab46e3b39447ef7f76ea849dbbe3c1b16f325a68203b09918",
+        "retrieval": "300019a17067e33995e75af205fadaa632ea0a08b35ca50567af3583785398fe"
+      }
+    },
+    {
+      "trajectory_index": 15,
+      "prompt": "white marble statue of a queen chess piece in a field, 3 5 mm, photography",
+      "metrics": {
+        "local": {
+          "psnr_db": 27.1828,
+          "ssim": 0.914917
+        },
+        "retrieval": {
+          "psnr_db": 27.2761,
+          "ssim": 0.913882
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/knn-visual/fold0_example3_teacher.png",
+        "local": "results/speculative/knn-visual/fold0_example3_local.png",
+        "retrieval": "results/speculative/knn-visual/fold0_example3_retrieval.png"
+      },
+      "sha256": {
+        "teacher": "c98321e25182211b8ab86ae7b7c1a6ce2355a6c41881b50a5772a77be6fc84da",
+        "local": "e18697731a7502034d97d6a49dba31b8bb03acc918fd7422e309b1bacf612683",
+        "retrieval": "aae2862a8f5876b4ffed43c5d1bb47ffab74c2e63605498fb232b43557359217"
+      }
+    },
+    {
+      "trajectory_index": 20,
+      "prompt": "broken humanoid robot withered trending in artstation 4 k 8 k hd high detail smooth",
+      "metrics": {
+        "local": {
+          "psnr_db": 21.5528,
+          "ssim": 0.855778
+        },
+        "retrieval": {
+          "psnr_db": 21.6541,
+          "ssim": 0.856916
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/knn-visual/fold0_example4_teacher.png",
+        "local": "results/speculative/knn-visual/fold0_example4_local.png",
+        "retrieval": "results/speculative/knn-visual/fold0_example4_retrieval.png"
+      },
+      "sha256": {
+        "teacher": "511481377863ba1356a8766929a6c506edaa727e7182f71edbbccc9e2000f85e",
+        "local": "3775a8ce9fc8f6b6e576d5c1b59c8d8b5e13bb4e0b6c497da5c71a836126fae8",
+        "retrieval": "f190139a4340ecea6ce8600db479df337ef12a1ac9bc1f9d0746095e5111a2b1"
+      }
+    },
+    {
+      "trajectory_index": 25,
+      "prompt": "complex 3 d render hyper detailed ultra sharp beautiful futuristic close - up stunning biomechanical humanoid woman with carved porcelain ivory fair face, iris van herpen daisies corals filigree lace haute couture headdress with rhizomorph finials spires, white mecha, cyberpunk steel brackets, fractal red puffballs",
+      "metrics": {
+        "local": {
+          "psnr_db": 21.0641,
+          "ssim": 0.79305
+        },
+        "retrieval": {
+          "psnr_db": 21.8051,
+          "ssim": 0.81359
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/knn-visual/fold0_example5_teacher.png",
+        "local": "results/speculative/knn-visual/fold0_example5_local.png",
+        "retrieval": "results/speculative/knn-visual/fold0_example5_retrieval.png"
+      },
+      "sha256": {
+        "teacher": "450455910f19dbaa37be9dc3a9c018168508456fb2e0d63b2f4bc02680bd583c",
+        "local": "d613c06d5fb764c326c04f1b2b38e0384f45055f9b68c24b3c471b9433698164",
+        "retrieval": "3a3f6c1a89a2ca707af19f883263be7d7168358df18751d8b16e58e15ca98302"
+      }
+    }
+  ],
+  "figure": "paper/figures/knn_visual_grid.png",
+  "figure_sha256": "81e8f3bd1bc85936514eb0833e0995e3013c1c1118eb697d1c907184d83abbdf"
+}
