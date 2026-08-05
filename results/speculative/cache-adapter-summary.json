@@ -1,0 +1,146 @@
+{
+  "huggingface_repo": "lee101/zimage-latent-teleport-cache-adapter",
+  "protocol": {
+    "trajectory_dir": "/sdb-disk/latentteleport-spec/trajs-16step-512",
+    "trajectories": 200,
+    "fold": 0,
+    "folds": 5,
+    "train_trajectories": 160,
+    "test_trajectories": 40,
+    "horizons": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "top_k": 8,
+    "pool_k": 16,
+    "device": "cpu",
+    "seed": 17,
+    "cells": 37
+  },
+  "model": {
+    "config": {
+      "latent_channels": 16,
+      "hidden_channels": 32,
+      "condition_dim": 6,
+      "num_blocks": 2
+    },
+    "parameters": 7312
+  },
+  "training": {
+    "epochs": 6,
+    "batches_per_epoch": 250,
+    "batch_size": 8,
+    "learning_rate": 0.0003,
+    "elapsed_seconds": 132.357,
+    "best_epoch": 6,
+    "history": [
+      {
+        "epoch": 1,
+        "train_rel_l2_squared": 0.0514284,
+        "validation_rel_l2": 0.22412,
+        "seconds": 23.948
+      },
+      {
+        "epoch": 2,
+        "train_rel_l2_squared": 0.0495702,
+        "validation_rel_l2": 0.223576,
+        "seconds": 24.572
+      },
+      {
+        "epoch": 3,
+        "train_rel_l2_squared": 0.0497072,
+        "validation_rel_l2": 0.223183,
+        "seconds": 18.94
+      },
+      {
+        "epoch": 4,
+        "train_rel_l2_squared": 0.0515266,
+        "validation_rel_l2": 0.222896,
+        "seconds": 19.434
+      },
+      {
+        "epoch": 5,
+        "train_rel_l2_squared": 0.0490296,
+        "validation_rel_l2": 0.222664,
+        "seconds": 16.857
+      },
+      {
+        "epoch": 6,
+        "train_rel_l2_squared": 0.0531349,
+        "validation_rel_l2": 0.222526,
+        "seconds": 23.438
+      }
+    ]
+  },
+  "inference_timing": {
+    "device": "cpu",
+    "repeats": 100,
+    "median_ms": 3.27555,
+    "p95_ms": 3.70435
+  },
+  "test": {
+    "summary": {
+      "local": 0.232006,
+      "scalar_gate": 0.22502,
+      "adapter": 0.222526,
+      "adapter_improvement_vs_local_pct": 4.086,
+      "adapter_improvement_vs_scalar_gate_pct": 1.108
+    },
+    "by_horizon": {
+      "1": {
+        "local": 0.183492,
+        "scalar_gate": 0.180124,
+        "adapter": 0.179665
+      },
+      "2": {
+        "local": 0.211047,
+        "scalar_gate": 0.206151,
+        "adapter": 0.204267
+      },
+      "4": {
+        "local": 0.260134,
+        "scalar_gate": 0.252016,
+        "adapter": 0.248091
+      },
+      "8": {
+        "local": 0.343919,
+        "scalar_gate": 0.32569,
+        "adapter": 0.319549
+      }
+    }
+  },
+  "decoded_endpoint": {
+    "protocol": {
+      "fold": 0,
+      "folds": 5,
+      "step": 6,
+      "horizon": 8,
+      "target_step": 14,
+      "top_k": 8,
+      "candidate_pool": 16,
+      "examples": 6,
+      "scope": "held-out endpoint-latent VAE decode; no branched denoiser correction",
+      "adapter_dir": "/sdb-disk/latentteleport-spec/cache-adapter-cpu-v2"
+    },
+    "summary": {
+      "local": {
+        "psnr_db": 21.47798,
+        "ssim": 0.77313
+      },
+      "retrieval": {
+        "psnr_db": 21.83908,
+        "ssim": 0.78805
+      },
+      "shrinkage": {
+        "psnr_db": 21.83893,
+        "ssim": 0.78832
+      },
+      "adapter": {
+        "psnr_db": 21.92225,
+        "ssim": 0.78773
+      }
+    }
+  }
+}

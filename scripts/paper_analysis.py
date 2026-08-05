@@ -191,13 +191,22 @@ def knn_ablation() -> dict:
 
 def knn_visual() -> dict:
     """Held-out decoded endpoint comparison for local and retrieved forecasts."""
-    raw = load_json(RESULTS / "knn-visual" / "summary.json")
+    raw = load_json(
+        RESULTS / "cache-procedure-visual" / "summary.json",
+        RESULTS / "knn-visual" / "summary.json",
+    )
     if not raw:
         return {}
     return {
         "protocol": raw.get("protocol", {}),
         "summary": raw.get("summary", {}),
     }
+
+
+def cache_adapter() -> dict:
+    """Focused learned cache adapter training, timing, and holdout metrics."""
+    raw = load_json(RESULTS / "cache-adapter-summary.json")
+    return raw or {}
 
 
 def tex_escape(text: str) -> str:
@@ -337,6 +346,23 @@ def write_tables(data: dict, out_dir: Path) -> None:
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_knn_timing.tex").write_text("\n".join(lines) + "\n")
 
+    adapter = data.get("cache_adapter", {})
+    adapter_horizons = adapter.get("test", {}).get("by_horizon", {})
+    lines = [
+        r"\begin{tabular}{@{}crrr@{}}",
+        r"\toprule",
+        r"horizon & calibrated local & scalar cache gate & learned adapter \\",
+        r"\midrule",
+    ]
+    for horizon in sorted(adapter_horizons, key=int):
+        row = adapter_horizons[horizon]
+        lines.append(
+            f"{horizon} & {row['local']:.4f} & {row['scalar_gate']:.4f} & "
+            f"{row['adapter']:.4f} \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_cache_adapter.tex").write_text("\n".join(lines) + "\n")
+
     visual = data.get("knn_visual", {}).get("summary", {})
     lines = [
         r"\begin{tabular}{@{}lrr@{}}",
@@ -345,14 +371,17 @@ def write_tables(data: dict, out_dir: Path) -> None:
         r"\midrule",
     ]
     visual_k = data.get("knn_visual", {}).get("protocol", {}).get("top_k", "?")
-    for label, method in (
+    visual_rows = [
         ("Calibrated local", "local"),
         (f"Pruned {visual_k}-NN residual", "retrieval"),
-    ):
+        ("Variance-shrunk cache", "shrinkage"),
+        ("Learned cache adapter", "adapter"),
+    ]
+    for label, method in visual_rows:
         if method in visual:
             lines.append(
                 f"{label} & {visual[method]['psnr_db']:.2f} & "
-                f"{visual[method]['ssim']:.3f} \\\\"
+                f"{visual[method]['ssim']:.4f} \\\\"
             )
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_knn_visual.tex").write_text("\n".join(lines) + "\n")
@@ -426,6 +455,24 @@ def write_tables(data: dict, out_dir: Path) -> None:
             r"\newcommand{\RetrievalBestGain}{%.1f\%%}"
             % best_values["change_vs_local_scaled_pct"]
         )
+    adapter_summary = data.get("cache_adapter", {}).get("test", {}).get("summary", {})
+    adapter_model = data.get("cache_adapter", {}).get("model", {})
+    adapter_timing = data.get("cache_adapter", {}).get("inference_timing", {})
+    if adapter_summary:
+        macros.append(
+            r"\newcommand{\CacheAdapterParameters}{%s}"
+            % f"{adapter_model.get('parameters', 0):,}"
+        )
+        macros.append(
+            r"\newcommand{\CacheAdapterRelLTwo}{%.3f}" % adapter_summary["adapter"]
+        )
+        macros.append(
+            r"\newcommand{\CacheAdapterGain}{%.1f\%%}"
+            % adapter_summary["adapter_improvement_vs_scalar_gate_pct"]
+        )
+        macros.append(
+            r"\newcommand{\CacheAdapterCpuMs}{%.2f}" % adapter_timing["median_ms"]
+        )
     (out_dir / "macros.tex").write_text("\n".join(macros) + "\n")
 
 
@@ -442,6 +489,7 @@ def main() -> int:
         "schedule": schedule_ablation(),
         "knn": knn_ablation(),
         "knn_visual": knn_visual(),
+        "cache_adapter": cache_adapter(),
     }
     out_dir = Path(args.out)
     write_tables(data, out_dir)
@@ -451,6 +499,7 @@ def main() -> int:
         f"wrote {out_dir}/table_e2e.tex, table_gap.tex, "
         "table_forecaster_ablation.tex, table_schedule_ablation.tex, "
         "table_knn_ablation.tex, table_knn_timing.tex, table_knn_visual.tex, "
+        "table_cache_adapter.tex, "
         "macros.tex, analysis.json"
     )
     for k, e in sorted(data["e2e"].items()):

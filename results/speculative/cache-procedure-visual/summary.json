@@ -1,0 +1,262 @@
+{
+  "protocol": {
+    "fold": 0,
+    "folds": 5,
+    "step": 6,
+    "horizon": 8,
+    "target_step": 14,
+    "top_k": 8,
+    "candidate_pool": 16,
+    "examples": 6,
+    "scope": "held-out endpoint-latent VAE decode; no branched denoiser correction",
+    "adapter_dir": "/sdb-disk/latentteleport-spec/cache-adapter-cpu-v2"
+  },
+  "coefficients": {
+    "momentum_scale": 2.008178,
+    "local_weight": 0.998142,
+    "residual_weight": 0.628044
+  },
+  "shrinkage": {
+    "strength": 0.1,
+    "local_weight": 0.997349,
+    "residual_weight": 0.697831
+  },
+  "summary": {
+    "local": {
+      "psnr_db": 21.47798,
+      "ssim": 0.77313
+    },
+    "retrieval": {
+      "psnr_db": 21.83908,
+      "ssim": 0.78805
+    },
+    "shrinkage": {
+      "psnr_db": 21.83893,
+      "ssim": 0.78832
+    },
+    "adapter": {
+      "psnr_db": 21.92225,
+      "ssim": 0.78773
+    }
+  },
+  "rows": [
+    {
+      "trajectory_index": 0,
+      "prompt": "a beautiful painting heron of fire, by ukiyo - e award - winning art color screen printing",
+      "metrics": {
+        "local": {
+          "psnr_db": 20.9633,
+          "ssim": 0.713622
+        },
+        "retrieval": {
+          "psnr_db": 21.0555,
+          "ssim": 0.725972
+        },
+        "adapter": {
+          "psnr_db": 21.1373,
+          "ssim": 0.726209
+        },
+        "shrinkage": {
+          "psnr_db": 21.0692,
+          "ssim": 0.727052
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/cache-procedure-visual/fold0_example0_teacher.png",
+        "local": "results/speculative/cache-procedure-visual/fold0_example0_local.png",
+        "retrieval": "results/speculative/cache-procedure-visual/fold0_example0_retrieval.png",
+        "adapter": "results/speculative/cache-procedure-visual/fold0_example0_adapter.png",
+        "shrinkage": "results/speculative/cache-procedure-visual/fold0_example0_shrinkage.png"
+      },
+      "sha256": {
+        "teacher": "4e3482e3b8605853f9f7bbb5aefc16bb283d2d23b24c0f8880fed856933aca94",
+        "local": "14feff57d13ef866bff69d5168c4e493a4b6dcb85a927705a998eb44484bf0d4",
+        "retrieval": "91861d45f105a2dca38f311337f7413967365ce13223c6402f6a2d335210ed95",
+        "adapter": "a126faab0dd6b58a1f9b35d712d4423c92ddbc09906518ea13766127ae9c1ca5",
+        "shrinkage": "e1ddeac5737daeea3da77ca4a57acd123099785bdceda89c4b2c386485088600"
+      }
+    },
+    {
+      "trajectory_index": 5,
+      "prompt": "mount epic books screenshot world of warcraft mounts worldboss comics that looks like it is from borderlands by jesper ejsing, by rhads, makoto shinkai alena aenami artworks in 4 k beeple, by thomas kinkade heartstone league of legends dofus overwatch",
+      "metrics": {
+        "local": {
+          "psnr_db": 17.4556,
+          "ssim": 0.600218
+        },
+        "retrieval": {
+          "psnr_db": 17.9451,
+          "ssim": 0.63412
+        },
+        "adapter": {
+          "psnr_db": 18.0492,
+          "ssim": 0.633988
+        },
+        "shrinkage": {
+          "psnr_db": 17.9365,
+          "ssim": 0.633718
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/cache-procedure-visual/fold0_example1_teacher.png",
+        "local": "results/speculative/cache-procedure-visual/fold0_example1_local.png",
+        "retrieval": "results/speculative/cache-procedure-visual/fold0_example1_retrieval.png",
+        "adapter": "results/speculative/cache-procedure-visual/fold0_example1_adapter.png",
+        "shrinkage": "results/speculative/cache-procedure-visual/fold0_example1_shrinkage.png"
+      },
+      "sha256": {
+        "teacher": "78919855af470afdc80535d62bc1b496fcd334f22cbe9ced67d14292840c537a",
+        "local": "5cc987218382a64d0b1d402e291f7511e9c93e50dece8ab5fd9595a513e44bfc",
+        "retrieval": "174732d1d1aa9c2004dac6153c781d3f43d1cb7aec8e329d2c8004ada8b94ec9",
+        "adapter": "e58bc589ab44e1bc8ad1d0734000878214cb7b5ac098728e6f2dc85453d605fc",
+        "shrinkage": "dc4929bae3292d3702ad3623c3811ee762823f58a8b8f34fecf39c3ae010c906"
+      }
+    },
+    {
+      "trajectory_index": 10,
+      "prompt": "complex 3 d render hyper detailed ultra sharp beautiful futuristic stunning biomechanical emma watson with porcelain ivory face, medium shot portrait, close - up, filigree lace, iris van herpen cyberpunk daisies corals haute couture headdress with rhizomorph finials spires, brackets, fractal embroidered puffballs, octane render, 8 k",
+      "metrics": {
+        "local": {
+          "psnr_db": 20.6493,
+          "ssim": 0.761167
+        },
+        "retrieval": {
+          "psnr_db": 21.2986,
+          "ssim": 0.783813
+        },
+        "adapter": {
+          "psnr_db": 21.3658,
+          "ssim": 0.783573
+        },
+        "shrinkage": {
+          "psnr_db": 21.2932,
+          "ssim": 0.783983
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/cache-procedure-visual/fold0_example2_teacher.png",
+        "local": "results/speculative/cache-procedure-visual/fold0_example2_local.png",
+        "retrieval": "results/speculative/cache-procedure-visual/fold0_example2_retrieval.png",
+        "adapter": "results/speculative/cache-procedure-visual/fold0_example2_adapter.png",
+        "shrinkage": "results/speculative/cache-procedure-visual/fold0_example2_shrinkage.png"
+      },
+      "sha256": {
+        "teacher": "881999c8cd6a84abfb1d1bde95a0c45e6e09bd409999f3b25d1d59ec19718031",
+        "local": "4d911ff65c6d80bab46e3b39447ef7f76ea849dbbe3c1b16f325a68203b09918",
+        "retrieval": "300019a17067e33995e75af205fadaa632ea0a08b35ca50567af3583785398fe",
+        "adapter": "15e859dca1491934c04073066c4f653e37f85ff28d94f9fdf7f8cc5666626f5e",
+        "shrinkage": "39edb3a49853cceeed66e2d982df5722396f193c5109320452b0c4506e638a97"
+      }
+    },
+    {
+      "trajectory_index": 15,
+      "prompt": "white marble statue of a queen chess piece in a field, 3 5 mm, photography",
+      "metrics": {
+        "local": {
+          "psnr_db": 27.1828,
+          "ssim": 0.914917
+        },
+        "retrieval": {
+          "psnr_db": 27.2761,
+          "ssim": 0.913882
+        },
+        "adapter": {
+          "psnr_db": 27.3249,
+          "ssim": 0.913105
+        },
+        "shrinkage": {
+          "psnr_db": 27.2802,
+          "ssim": 0.914279
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/cache-procedure-visual/fold0_example3_teacher.png",
+        "local": "results/speculative/cache-procedure-visual/fold0_example3_local.png",
+        "retrieval": "results/speculative/cache-procedure-visual/fold0_example3_retrieval.png",
+        "adapter": "results/speculative/cache-procedure-visual/fold0_example3_adapter.png",
+        "shrinkage": "results/speculative/cache-procedure-visual/fold0_example3_shrinkage.png"
+      },
+      "sha256": {
+        "teacher": "c98321e25182211b8ab86ae7b7c1a6ce2355a6c41881b50a5772a77be6fc84da",
+        "local": "e18697731a7502034d97d6a49dba31b8bb03acc918fd7422e309b1bacf612683",
+        "retrieval": "aae2862a8f5876b4ffed43c5d1bb47ffab74c2e63605498fb232b43557359217",
+        "adapter": "66d5f087006b963e44c00b9c27aa41521d8a21c05b95d44d908574aec821460c",
+        "shrinkage": "145ba536b30d85d3c7af025ac5d049a8d7f072faf58db2e642e2d98361195614"
+      }
+    },
+    {
+      "trajectory_index": 20,
+      "prompt": "broken humanoid robot withered trending in artstation 4 k 8 k hd high detail smooth",
+      "metrics": {
+        "local": {
+          "psnr_db": 21.5528,
+          "ssim": 0.855778
+        },
+        "retrieval": {
+          "psnr_db": 21.6541,
+          "ssim": 0.856916
+        },
+        "adapter": {
+          "psnr_db": 21.7967,
+          "ssim": 0.857214
+        },
+        "shrinkage": {
+          "psnr_db": 21.666,
+          "ssim": 0.857498
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/cache-procedure-visual/fold0_example4_teacher.png",
+        "local": "results/speculative/cache-procedure-visual/fold0_example4_local.png",
+        "retrieval": "results/speculative/cache-procedure-visual/fold0_example4_retrieval.png",
+        "adapter": "results/speculative/cache-procedure-visual/fold0_example4_adapter.png",
+        "shrinkage": "results/speculative/cache-procedure-visual/fold0_example4_shrinkage.png"
+      },
+      "sha256": {
+        "teacher": "511481377863ba1356a8766929a6c506edaa727e7182f71edbbccc9e2000f85e",
+        "local": "3775a8ce9fc8f6b6e576d5c1b59c8d8b5e13bb4e0b6c497da5c71a836126fae8",
+        "retrieval": "f190139a4340ecea6ce8600db479df337ef12a1ac9bc1f9d0746095e5111a2b1",
+        "adapter": "a023a1fa99cc2087310e05fc91b037a7c21d0d9b0db51d6a2054f69f06926ba5",
+        "shrinkage": "9b32fa106eca275ce7784d1b8c960a7e3a14c7d1c0f0440bbe1f0ac15b3eea2c"
+      }
+    },
+    {
+      "trajectory_index": 25,
+      "prompt": "complex 3 d render hyper detailed ultra sharp beautiful futuristic close - up stunning biomechanical humanoid woman with carved porcelain ivory fair face, iris van herpen daisies corals filigree lace haute couture headdress with rhizomorph finials spires, white mecha, cyberpunk steel brackets, fractal red puffballs",
+      "metrics": {
+        "local": {
+          "psnr_db": 21.0641,
+          "ssim": 0.79305
+        },
+        "retrieval": {
+          "psnr_db": 21.8051,
+          "ssim": 0.81359
+        },
+        "adapter": {
+          "psnr_db": 21.8596,
+          "ssim": 0.81228
+        },
+        "shrinkage": {
+          "psnr_db": 21.7885,
+          "ssim": 0.813413
+        }
+      },
+      "paths": {
+        "teacher": "results/speculative/cache-procedure-visual/fold0_example5_teacher.png",
+        "local": "results/speculative/cache-procedure-visual/fold0_example5_local.png",
+        "retrieval": "results/speculative/cache-procedure-visual/fold0_example5_retrieval.png",
+        "adapter": "results/speculative/cache-procedure-visual/fold0_example5_adapter.png",
+        "shrinkage": "results/speculative/cache-procedure-visual/fold0_example5_shrinkage.png"
+      },
+      "sha256": {
+        "teacher": "450455910f19dbaa37be9dc3a9c018168508456fb2e0d63b2f4bc02680bd583c",
+        "local": "d613c06d5fb764c326c04f1b2b38e0384f45055f9b68c24b3c471b9433698164",
+        "retrieval": "3a3f6c1a89a2ca707af19f883263be7d7168358df18751d8b16e58e15ca98302",
+        "adapter": "fd96f1cd7e7cd91bff7d8acf25e27754790b62dfe28ad7b78943a384214c9919",
+        "shrinkage": "e41854a7eec004ae3f2ef4fc498584cac945a6f3bc461ed85496f4856948f719"
+      }
+    }
+  ],
+  "figure": "paper/figures/cache_procedure_grid.png",
+  "figure_sha256": "b6b2ad6101d46fd0a76d69f06a9132d057e3d610e697d47b846a6c897dc583a6"
+}

@@ -48,6 +48,37 @@ style-LoRA profiles. `diffusion_frontier.flow_resume` provides exact same-prompt
 sigma-tail resume for FLUX/Krea; cross-prompt latent reuse remains an explicitly
 quality-gated learned experiment.
 
+## Latent Teleportation for Z-Image
+
+The [Latent Teleportation paper](paper/latent_teleportation.pdf) studies
+schedule-calibrated forecasting, aligned denoiser anchors, motion-pruned
+trajectory retrieval, variance-aware cache shrinkage, and a small learned cache
+adapter for Z-Image Turbo.
+
+The experimental
+[Z-Image latent-teleport cache adapter](https://huggingface.co/lee101/zimage-latent-teleport-cache-adapter)
+is a 7,312-parameter (31 KB) residual head. On its held-out fold it reduces
+latent forecast relL2 from 0.2320 for calibrated momentum and 0.2250 for the
+scalar cache gate to 0.2225. In the six-prompt long-warp image grid it improves
+PSNR from 21.48 dB to 21.92 dB; the variance-shrunk non-neural cache path gives
+the highest measured SSIM at 0.7883.
+
+```bash
+# Refit the focused cache adapter from stored trajectories.
+python scripts/spec_train_cache_adapter.py --device auto
+
+# Reproduce the teacher/local/cache/shrinkage/adapter image grid.
+python scripts/spec_knn_visual.py \
+  --top-k 8 --include-shrinkage \
+  --adapter-dir /path/to/downloaded/adapter \
+  --output-dir results/speculative/cache-procedure-visual \
+  --figure paper/figures/cache_procedure_grid.png
+```
+
+The released adapter targets the recorded 512px, 16-step Z-Image Turbo
+schedule. It is not a standalone image model; new solvers, resolutions, and
+step schedules require trajectory capture and refitting.
+
 # Models
 ## CuteChronos2
 

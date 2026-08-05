@@ -53,6 +53,11 @@ motion. The best eight-neighbour residual lowers held-out error by 3.3\%,
 improves a six-prompt decoded long-warp comparison by 0.36\,dB PSNR and 0.015
 SSIM, and costs 0.80\,ms/query in a resident single-thread CPU benchmark versus
 5.84\,ms for dense trajectory attention.
+Variance-aware shrinkage raises the decoded comparison to 0.7883 SSIM. A
+\CacheAdapterParameters-parameter focused adapter improves the scalar cache gate
+at every evaluated horizon, reaches \relltwo{} $=\CacheAdapterRelLTwo$, and
+raises decoded PSNR to 21.92\,dB; its 31\,KB weights are published with schedule
+coefficients and raw metrics.
 
 The paper connects these mechanisms to Align Your Steps, consistency models,
 latent consistency models, flow matching, reflow, and feature-reuse methods;
@@ -132,6 +137,10 @@ A model--serving co-design problem whose useful operating point can change with 
     neighbour transport, prompt-only top-$k$, motion-agreement pruning, scalar
     and channel transport, and learned residual fusion under five-fold held-out
     evaluation (Section~\ref{sec:knn-ablation}).
+  \item \textbf{Variance-aware and learned cache procedures}: an uncertainty
+    shrinkage rule and a zero-initialized \CacheAdapterParameters-parameter
+    spatial adapter, evaluated by horizon and decoded in the full procedure
+    grid. We publish the adapter weights and schedule table.
   \item \textbf{An operating-point bottleneck diagnosis}: call reductions
     of $\CallReductionKThree\times$ yield $\CorrectedSpeedupKThree\times$
     wall-clock, and a skip-everything ablation caps at
@@ -396,7 +405,9 @@ $k=8$ and emits full-schedule deployment coefficients;
 \path{scripts/spec_schedule_ablation.py} searches anchor compositions under fixed
 budgets; \path{scripts/spec_knn_ablation.py} evaluates retrieval architectures and
 resident-cache overhead; and \path{scripts/spec_knn_visual.py} decodes the
-held-out long-warp grid. The production helper
+held-out long-warp grid. \path{scripts/spec_train_cache_adapter.py} trains and
+evaluates the focused head, while \path{scripts/package_cache_adapter.py}
+assembles its weights, schedule table, model card, and metrics. The production helper
 \path{forecast_with_pruned_knn_residual} implements the retained cache path.
 Image tables and grids are
 emitted by \path{scripts/paper_ablation_grids.py} from the 72 saved PNGs.
@@ -574,23 +585,63 @@ bounds the number of latent records that must be prefetched. In a GPU server,
 the same plan maps to a small embedding/motion top-$k$ followed by one weighted
 residual reduction.
 
+\subsubsection{Variance shrinkage and a focused learned adapter}
+
+Neighbour disagreement is itself a useful input. A training-only grid chooses a
+Wiener-style elementwise reliability shrinkage,
+\begin{equation}
+  \bar r_{\mathrm{shrink}} = \bar r\,
+  \frac{\bar r^2}{\bar r^2+\lambda\sigma_r^2+\epsilon},
+\end{equation}
+where $\bar r$ and $\sigma_r$ are the weighted mean and standard deviation of
+the eight retrieved residuals. The selected $\lambda=0.1$ suppresses cache
+corrections where neighbours disagree while preserving stable spatial detail.
+
+We also train a \CacheAdapterParameters-parameter convolutional adapter. Its
+inputs are the scalar-gated base move, $\bar r$, $\sigma_r$, and six schedule/
+confidence scalars. A $1\times1$ projection, two depthwise spatial-mixing
+blocks, and a zero-initialized output projection predict only the correction to
+the scalar gate. Zero initialization therefore exactly recovers the best
+non-neural cache rule.
+
+\begin{table}[ht]
+\centering
+\small
+\input{generated/table_cache_adapter}
+\caption{Fold-0 held-out \relltwo{} for the focused cache adapter, trained on
+160 trajectories and evaluated on 40 disjoint trajectories. The adapter is one
+shared head across all listed horizons. Lower is better.}
+\label{tab:cache-adapter}
+\end{table}
+
+The adapter improves every horizon and reaches aggregate \relltwo{}
+$=\CacheAdapterRelLTwo$, \CacheAdapterGain{} below the fitted scalar cache gate
+and 4.1\% below calibrated local momentum. Training takes 132 seconds on CPU;
+the head itself takes \CacheAdapterCpuMs\,ms per $16\times64\times64$ latent in
+the one-thread CPU benchmark. The RTX 5090 attempt was safely deferred because
+co-resident production services left less than 2.5\,GiB allocatable VRAM, so we
+do not substitute an estimated GPU training time. The 31\,KB weights, config,
+schedule coefficients, and raw metrics are published at
+\url{https://huggingface.co/lee101/zimage-latent-teleport-cache-adapter}.
+
 \begin{table}[ht]
 \centering
 \small
 \input{generated/table_knn_visual}
 \caption{Decoded held-out endpoint forecasts for the step-$6\rightarrow14$
-long warp, averaged over six prompts from fold 0. Metrics compare each decoded
-forecast with the decoded recorded endpoint. Higher is better.}
+long warp, averaged over six prompts from fold 0. Shrinkage has the highest
+SSIM; the adapter has the highest PSNR. Metrics compare each decoded forecast
+with the decoded recorded endpoint. Higher is better.}
 \label{tab:knn-visual}
 \end{table}
 
 \begin{figure}[p]
 \centering
-\includegraphics[width=\textwidth,height=0.82\textheight,keepaspectratio]{figures/knn_visual_grid.png}
-\caption{Held-out long-warp visual comparison. Every row is a test-fold prompt;
-the retrieval column uses eight motion-pruned trajectories and the two-input
-residual gate. Panels are direct VAE decodes of the recorded endpoint and two
-forecasted endpoint latents, with no content editing.}
+\includegraphics[width=\textwidth,height=0.82\textheight,keepaspectratio]{figures/cache_procedure_grid.png}
+\caption{Held-out long-warp procedure ablation. Every row is a test-fold
+prompt; columns compare calibrated momentum, the eight-neighbour scalar gate,
+variance-aware shrinkage, and the learned cache adapter. Panels are direct VAE
+decodes of recorded or forecasted endpoint latents with no content editing.}
 \label{fig:knn-visual}
 \end{figure}
 
@@ -980,7 +1031,9 @@ four-interval proxy reduces local error by \AlignedFourImprovement{}, and four
 distinct near-optimal schedules stay within \StaggeredGap{} of the best. A
 motion-pruned eight-neighbour residual further reduces held-out error by
 \RetrievalBestGain{} and improves the six-prompt long-warp decode from
-21.48 to 21.84\,dB PSNR and from 0.773 to 0.788 SSIM. These results support a
+21.48 to 21.84\,dB PSNR and from 0.773 to 0.788 SSIM. Variance shrinkage reaches
+0.7883 SSIM, while the focused cache adapter improves the scalar gate at every
+horizon and reaches 21.92\,dB. These results support a
 specific production architecture: preserve local momentum, retrieve only a
 small residual, align the anchors, and compact the batch lanes that need real
 refinement. The evaluated drafting
