@@ -215,6 +215,37 @@ def test_get_zimage_pipelines_caches_and_shares_transformer(fake_pipeline_env):
     assert img2img.transformer is text2img.transformer
 
 
+def test_pipeline_cache_is_bounded_to_one_model_by_default(fake_pipeline_env):
+    first, _ = zpipe.get_zimage_pipelines(
+        model_path="repo/first",
+        torch_dtype=torch.float32,
+        device="cpu",
+        enable_cpu_offload=False,
+    )
+    second, _ = zpipe.get_zimage_pipelines(
+        model_path="repo/second",
+        torch_dtype=torch.float32,
+        device="cpu",
+        enable_cpu_offload=False,
+    )
+
+    assert first is not second
+    assert len(zpipe._ZIMAGE_PIPELINE_CACHE) == 1
+    assert next(iter(zpipe._ZIMAGE_PIPELINE_CACHE))[0] == "repo/second"
+
+
+def test_pipeline_cache_size_can_be_disabled(fake_pipeline_env, monkeypatch):
+    monkeypatch.setenv("CUTEZIMAGE_PIPELINE_CACHE_SIZE", "0")
+    zpipe.get_zimage_pipelines(
+        model_path="repo/zimage",
+        torch_dtype=torch.float32,
+        device="cpu",
+        enable_cpu_offload=False,
+    )
+
+    assert not zpipe._ZIMAGE_PIPELINE_CACHE
+
+
 def test_get_zimage_pipelines_builds_cute_transformer_on_cpu_before_cuda_offload(fake_pipeline_env, monkeypatch):
     monkeypatch.setattr(zpipe.torch.cuda, "is_available", lambda: True)
 

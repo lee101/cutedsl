@@ -15,6 +15,7 @@ from cutezimage.model import (
     RMSNorm,
     TimestepEmbedder,
     FinalLayer,
+    _residual_rms_update,
 )
 
 
@@ -31,6 +32,45 @@ class TestRMSNormModule:
         out1 = norm(x)
         out2 = norm(x)
         assert torch.equal(out1, out2)
+
+
+class TestResidualRMSUpdate:
+    def test_fallback_matches_existing_expression(self):
+        torch.manual_seed(42)
+        residual = torch.randn(2, 4, 8)
+        branch = torch.randn(2, 4, 8)
+        gate = torch.randn(2, 1, 8).tanh()
+        norm = RMSNorm(8)
+
+        expected = residual + gate * norm(branch)
+        actual = _residual_rms_update(residual, branch, norm, gate)
+
+        assert torch.equal(actual, expected)
+
+    def test_fused_dispatch_is_inference_only(self, monkeypatch):
+        residual = torch.randn(2, 4, 8)
+        branch = torch.randn(2, 4, 8)
+        gate = torch.randn(2, 1, 8)
+        norm = RMSNorm(8)
+        calls = []
+
+        def fake_fused(res, br, weight, gate=None, eps=1e-5):
+            calls.append((res, br, weight, gate, eps))
+            return torch.full_like(res, 3.0)
+
+        monkeypatch.setattr("cutezimage.model._get_fused_residual_rms", lambda: fake_fused)
+
+        class _CudaLikeTensor(torch.Tensor):
+            @property
+            def is_cuda(self):
+                return True
+
+        residual_cuda_like = residual.as_subclass(_CudaLikeTensor)
+        with torch.inference_mode():
+            out = _residual_rms_update(residual_cuda_like, branch, norm, gate)
+
+        assert len(calls) == 1
+        assert torch.equal(out, torch.full_like(residual, 3.0))
 
 
 class TestSiLUGatedFFN:
@@ -133,6 +173,27 @@ class TestTransformerBlock:
         adaln = torch.randn(2, min(256, ADALN_EMBED_DIM))
         out = block(x, adaln_input=adaln)
         assert out.shape == x.shape
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_fused_residual_block_matches_reference(self, monkeypatch):
+        torch.manual_seed(42)
+        block = CuteZImageTransformerBlock(
+            layer_id=0, dim=256, n_heads=4, n_kv_heads=4, modulation=True,
+        ).to(device="cuda", dtype=torch.bfloat16).eval()
+        x = torch.randn(2, 16, 256, device="cuda", dtype=torch.bfloat16)
+        adaln = torch.randn(
+            2, min(256, ADALN_EMBED_DIM), device="cuda", dtype=torch.bfloat16,
+        )
+
+        with torch.inference_mode():
+            monkeypatch.setenv("CUTEZIMAGE_FUSED_RESIDUAL", "0")
+            reference = block(x, adaln_input=adaln)
+            monkeypatch.setenv("CUTEZIMAGE_FUSED_RESIDUAL", "1")
+            fused = block(x, adaln_input=adaln)
+
+        error = (fused.float() - reference.float()).abs()
+        assert error.max().item() < 0.05
+        assert error.mean().item() < 0.003
 
     def test_with_attention_mask(self):
         block = CuteZImageTransformerBlock(

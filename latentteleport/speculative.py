@@ -9,6 +9,7 @@ trajectories (scripts/spec_collect.py).
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -165,12 +166,22 @@ def build_active_lane_plan(
 
 
 @torch.no_grad()
-def zimage_prepare(pipe, prompt: str, total_steps: int, height: int, width: int, seed: int, device: str = "cuda"):
+def zimage_prepare(
+    pipe,
+    prompt: str,
+    total_steps: int,
+    height: int,
+    width: int,
+    seed: int,
+    device: str = "cuda",
+    prompt_embeds=None,
+):
     """Encode prompt + prepare latents + full-schedule timesteps, mirroring
     ZImagePipeline.__call__ steps 1-5 (guidance 0 path)."""
     from diffusers.pipelines.z_image.pipeline_z_image import calculate_shift, retrieve_timesteps
 
-    prompt_embeds, _ = pipe.encode_prompt(prompt=prompt, device=device)
+    if prompt_embeds is None:
+        prompt_embeds, _ = pipe.encode_prompt(prompt=prompt, device=device)
     gen = torch.Generator(device=device).manual_seed(seed)
     latents = pipe.prepare_latents(1, pipe.transformer.in_channels, height, width, torch.float32, device, gen, None)
     image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
@@ -216,20 +227,41 @@ def speculative_denoise(
     width: int = 512,
     seed: int = 0,
     device: str = "cuda",
-    mode: str = "spec",  # spec | taylor | scaled | skip
+    mode: str = "spec",  # baseline | spec | taylor | scaled | skip
     momentum_scales: Mapping[tuple[int, int], float] | None = None,
+    prompt_embeds=None,
 ):
     """Manual denoise on the FULL schedule, but every real step is followed by
     draft_k teleported steps — those transformer calls are skipped entirely.
     mode=spec: walker rollout + interpolator; taylor: x + k*(x - x_prev_real);
     scaled: schedule-calibrated Taylor using momentum_scales[(anchor_step, k)];
     skip: no correction. Last step is always real."""
-    if mode not in {"spec", "taylor", "scaled", "skip"}:
+    if mode not in {"baseline", "spec", "taylor", "scaled", "skip"}:
         raise ValueError(f"unknown speculative mode: {mode}")
     if mode == "scaled" and momentum_scales is None:
         raise ValueError("scaled mode requires fitted momentum_scales")
-    prompt_embeds, latents, timesteps = zimage_prepare(pipe, prompt, total_steps, height, width, seed, device)
-    stats = {"big_steps": 0, "drafted_steps": 0, "scale_fallbacks": 0}
+    cuda_timing = torch.device(device).type == "cuda" and torch.cuda.is_available()
+
+    def synchronize():
+        if cuda_timing:
+            torch.cuda.synchronize(device)
+
+    if cuda_timing:
+        torch.cuda.reset_peak_memory_stats(device)
+    synchronize()
+    started = time.perf_counter()
+    prompt_embeds, latents, timesteps = zimage_prepare(
+        pipe, prompt, total_steps, height, width, seed, device,
+        prompt_embeds=prompt_embeds,
+    )
+    synchronize()
+    stats = {
+        "big_steps": 0,
+        "drafted_steps": 0,
+        "scale_fallbacks": 0,
+        "prepare_ms": (time.perf_counter() - started) * 1000.0,
+    }
+    denoise_started = time.perf_counter()
     i = 0
     n = len(timesteps)
     while i < n:
@@ -237,7 +269,7 @@ def speculative_denoise(
         latents = zimage_big_step(pipe, latents, timesteps[i], prompt_embeds)
         stats["big_steps"] += 1
         i += 1
-        k = min(draft_k, n - 1 - i)  # keep the final step real
+        k = 0 if mode == "baseline" else min(draft_k, n - 1 - i)  # keep the final step real
         if k > 0:
             if mode == "spec" and walker is not None and interp is not None:
                 delta = (latents - before).float()
@@ -260,4 +292,14 @@ def speculative_denoise(
                 pipe.scheduler._step_index += k
             stats["drafted_steps"] += k
             i += k
-    return zimage_decode(pipe, latents), stats
+    synchronize()
+    stats["denoise_ms"] = (time.perf_counter() - denoise_started) * 1000.0
+    decode_started = time.perf_counter()
+    image = zimage_decode(pipe, latents)
+    synchronize()
+    stats["decode_ms"] = (time.perf_counter() - decode_started) * 1000.0
+    stats["total_ms"] = stats["prepare_ms"] + stats["denoise_ms"] + stats["decode_ms"]
+    if cuda_timing:
+        stats["peak_vram_mb"] = torch.cuda.max_memory_allocated(device) / (1024 * 1024)
+        stats["reserved_vram_mb"] = torch.cuda.memory_reserved(device) / (1024 * 1024)
+    return image, stats

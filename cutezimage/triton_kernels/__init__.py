@@ -16,6 +16,11 @@ except ImportError:
     pass
 
 try:
+    from .fused_residual_rms import fused_residual_rms
+except ImportError:
+    pass
+
+try:
     from .rope_complex import apply_rope_complex
 except ImportError:
     pass

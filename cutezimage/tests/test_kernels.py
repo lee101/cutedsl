@@ -128,6 +128,35 @@ class TestFusedAdaLNNorm:
         assert max_err < 0.05, f"Max error {max_err}"
 
 
+class TestFusedResidualRMS:
+    @pytest.mark.parametrize("gate_seq", [None, 1, 16])
+    @pytest.mark.parametrize("D", [256, 3840])
+    def test_matches_reference(self, gate_seq, D):
+        from cutezimage.triton_kernels.fused_residual_rms import fused_residual_rms
+
+        torch.manual_seed(42)
+        B, S = 2, 16
+        residual = torch.randn(B, S, D, device="cuda", dtype=torch.bfloat16)
+        branch = torch.randn(B, S, D, device="cuda", dtype=torch.bfloat16)
+        # Production RMS weights stay close to one and AdaLN gates are tanh
+        # bounded.  Keep the parity gate representative of model execution.
+        weight = 1 + 0.1 * torch.randn(D, device="cuda", dtype=torch.bfloat16)
+        gate = None if gate_seq is None else torch.randn(
+            B, gate_seq, D, device="cuda", dtype=torch.bfloat16,
+        ).tanh()
+
+        variance = branch.float().pow(2).mean(-1, keepdim=True)
+        normalized = (branch.float() * torch.rsqrt(variance + 1e-5)).to(branch.dtype)
+        normalized = weight * normalized
+        ref = residual + normalized if gate is None else residual + gate * normalized
+
+        out = fused_residual_rms(residual, branch, weight, gate=gate, eps=1e-5)
+
+        assert out.shape == ref.shape
+        max_err = (out.float() - ref.float()).abs().max().item()
+        assert max_err < 0.05, f"Max error {max_err}"
+
+
 class TestRoPEComplex:
     def _reference_rope(self, x, freqs_cis):
         with torch.amp.autocast("cuda", enabled=False):

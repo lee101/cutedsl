@@ -1,0 +1,62 @@
+{
+  "quantization_3090": {
+    "protocol": {
+      "hardware": "NVIDIA RTX 3090 24 GB",
+      "resolution": "1024x1024",
+      "batch": 1,
+      "metric": "stable-diffusion.cpp median transformer seconds/iteration",
+      "source": "EXPERIMENTS.md; served Z-Image acceleration sweep"
+    },
+    "rows": [
+      {"quant": "Q8_0", "seconds_per_iteration": 1.02, "vram_gib": 10.7, "completed": true},
+      {"quant": "Q4_K", "seconds_per_iteration": 1.07, "vram_gib": 8.1, "completed": true},
+      {"quant": "Q6_K", "seconds_per_iteration": 1.20, "vram_gib": 9.4, "completed": false, "failure": "crashed on generation 5"}
+    ]
+  },
+  "step_cache_3090": {
+    "protocol": {
+      "hardware": "NVIDIA RTX 3090 24 GB",
+      "resolution": "1024x1024",
+      "reference_steps": 20,
+      "source": "EXPERIMENTS.md; stable-diffusion.cpp step-cache sweep",
+      "caveat": "Absolute blocks include thermal drift; comparisons are within this sweep."
+    },
+    "rows": [
+      {"method": "none", "steps": 3, "median_seconds": 5.81, "psnr_db": 15.07},
+      {"method": "none", "steps": 6, "median_seconds": 11.64, "psnr_db": 17.27},
+      {"method": "TaylorSeer", "steps": 6, "median_seconds": 11.87, "psnr_db": 17.27},
+      {"method": "DBCache", "steps": 6, "median_seconds": 8.16, "psnr_db": 15.12},
+      {"method": "TaylorSeer", "steps": 10, "median_seconds": 18.73, "psnr_db": 20.25}
+    ]
+  },
+  "fused_residual_rms_5090": {
+    "protocol": {
+      "timestamp_utc": "2026-08-26T23:31:00Z",
+      "hardware": "NVIDIA GeForce RTX 5090 32 GB, sm_120",
+      "shape": "1x2048x3840",
+      "dtype": "bfloat16",
+      "warmup": 10,
+      "timed_iterations": 50,
+      "scope": "isolated residual-add plus RMS-norm epilogue; not an end-to-end generation result"
+    },
+    "pytorch_ms": 0.298,
+    "triton_ms": 0.171,
+    "speedup": 1.74,
+    "correctness": "passed kernel and transformer-block reference tests"
+  },
+  "factorized_neural_combiner": {
+    "protocol": {
+      "latent_dim": 65536,
+      "clip_dim": 2560,
+      "hidden_dim": 1024,
+      "layers": 4,
+      "rank": 64,
+      "scope": "Neural latent-combiner auxiliary subnet at the production 16x64x64 latent shape"
+    },
+    "dense_parameter_count": 4502718464,
+    "factorized_parameter_count": 4600064,
+    "parameter_reduction": 978.8386511140715,
+    "factorized_test_peak_rss_kib": 507944,
+    "tests": "12 passed; zero initialization is the exact arithmetic mean"
+  }
+}

@@ -22,6 +22,7 @@ benchmark_images/
 benchmark_results/
 *.png
 !cutedsl.png
+!paper/figures/full_factorial_grid.png
 artifacts/
 results/
 downloads/
@@ -36,3 +37,4 @@ cutlass
 .claude
 research/*/experiments/*/out*.png
 research/*/experiments/*/enc_bench
+.inductor/

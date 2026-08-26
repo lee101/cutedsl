@@ -57,6 +57,14 @@ class SLERPCombiner:
 # --- Neural Combiner ---
 
 class NeuralCombinerNet(nn.Module):
+    """Low-rank latent combiner with bounded parameter and activation memory.
+
+    The original implementation flattened a production latent and constructed
+    dense input-to-hidden and hidden-to-latent matrices. At 16x64x64 that
+    exceeded 200 million parameters and could exhaust host memory merely by
+    constructing a second test instance.
+    """
+
     def __init__(
         self,
         latent_dim: int,
@@ -66,15 +74,17 @@ class NeuralCombinerNet(nn.Module):
     ):
         super().__init__()
         self.latent_dim = latent_dim
-        input_dim = latent_dim * 2 + clip_dim * 2
+        self.rank = min(64, max(8, hidden_dim), latent_dim)
+        self.condition = nn.Linear(clip_dim * 2, self.rank)
         layers = []
-        dim = input_dim
-        for i in range(num_layers - 1):
-            out = hidden_dim if i < num_layers - 2 else latent_dim
-            layers.extend([nn.Linear(dim, out), nn.SiLU()])
-            dim = out
-        layers.append(nn.Linear(dim, latent_dim))
+        for _ in range(max(1, num_layers - 1)):
+            layers.extend([nn.Linear(self.rank, self.rank), nn.SiLU()])
         self.net = nn.Sequential(*layers)
+        self.decode = nn.Linear(self.rank, latent_dim)
+        # Start as an exact arithmetic mean rather than an arbitrary full-scale
+        # latent. Training learns only a bounded-rank correction.
+        nn.init.zeros_(self.decode.weight)
+        nn.init.zeros_(self.decode.bias)
 
     def forward(
         self,
@@ -86,8 +96,13 @@ class NeuralCombinerNet(nn.Module):
         shape = latent_a.shape
         flat_a = latent_a.reshape(latent_a.shape[0], -1)
         flat_b = latent_b.reshape(latent_b.shape[0], -1)
-        x = torch.cat([flat_a, flat_b, emb_a, emb_b], dim=-1)
-        out = self.net(x)
+        latent_pair = torch.cat([flat_a, flat_b], dim=-1)
+        pooled = F.adaptive_avg_pool1d(
+            latent_pair.unsqueeze(1), self.rank,
+        ).squeeze(1)
+        condition = self.condition(torch.cat([emb_a, emb_b], dim=-1))
+        correction = self.decode(self.net(pooled + condition))
+        out = 0.5 * (flat_a + flat_b) + correction
         return out.reshape(shape)
 
 

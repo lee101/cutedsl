@@ -173,6 +173,40 @@ class TestFusedAdaLNNormBenchmark:
         print(f"    Speedup: {speedup:.2f}x")
 
 
+class TestFusedResidualRMSBenchmark:
+    """Gate the new output epilogue on correctness and report its speed."""
+
+    def test_residual_rms_perf(self):
+        from cutezimage.triton_kernels.fused_residual_rms import fused_residual_rms
+
+        torch.manual_seed(42)
+        residual = torch.randn(BATCH, SEQ_LEN, DIM, device="cuda", dtype=torch.bfloat16)
+        branch = torch.randn(BATCH, SEQ_LEN, DIM, device="cuda", dtype=torch.bfloat16)
+        gate = torch.randn(BATCH, 1, DIM, device="cuda", dtype=torch.bfloat16).tanh()
+        weight = 1 + 0.1 * torch.randn(DIM, device="cuda", dtype=torch.bfloat16)
+
+        def ref_fn():
+            variance = branch.float().pow(2).mean(-1, keepdim=True)
+            normalized = (branch.float() * torch.rsqrt(variance + 1e-5)).to(branch.dtype)
+            return residual + gate * (weight * normalized)
+
+        fused_fn = lambda: fused_residual_rms(residual, branch, weight, gate=gate, eps=1e-5)
+
+        ref = ref_fn()
+        out = fused_fn()
+        max_err = (out.float() - ref.float()).abs().max().item()
+        assert max_err < 0.05, f"Max error {max_err}"
+
+        ref_ms = _bench(ref_fn)
+        fused_ms = _bench(fused_fn)
+        speedup = ref_ms / fused_ms
+
+        print(f"\n  Fused residual RMS ({BATCH}x{SEQ_LEN}x{DIM} bf16):")
+        print(f"    PyTorch: {ref_ms:.3f} ms")
+        print(f"    Triton:  {fused_ms:.3f} ms")
+        print(f"    Speedup: {speedup:.2f}x")
+
+
 class TestFusedQKNormBenchmark:
     """Benchmark fused QK norm vs separate per-head norms."""
 

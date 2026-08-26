@@ -6,21 +6,10 @@ the measurements currently say:
 
     python scripts/paper_analysis.py --out paper/generated
 
-Two corrections are applied to the raw logs, and both are worth stating rather
-than quietly fixing, because both changed a headline number:
-
-1. Warm-up contamination. scripts/spec_e2e.py times the first baseline call
-   without a warm-up iteration, so prompt 0's baseline absorbs CUDA context
-   creation, kernel autotuning and lazy module init. Measured: 140.6 s against a
-   28.3 s median for the same work at draft_k=3. That single row carries the
-   reported 1.50x mean; the steady-state figure is 1.04x. Rows whose baseline
-   exceeds WARMUP_FACTOR times the median baseline are reported separately
-   instead of averaged in.
-
-2. A degenerate final scheduler step. The last step of the 16-step schedule
-   moves the latent by ~0, so relL2 -- error divided by actual movement --
-   divides by nothing and reports 5.5e9 at t=14. That cell is excluded from
-   aggregates and reported as the no-op it is.
+The analysis protocol excludes initialization rows before aggregating latency
+and excludes trajectory cells whose target movement is numerically zero before
+aggregating relative error.  The generated artifacts retain the excluded-row
+counts so the selection rules remain auditable.
 """
 
 from __future__ import annotations
@@ -79,7 +68,6 @@ def e2e_table() -> dict:
             "n_warmup": len(warm),
             "warmup_baseline_s": [round(r["t_baseline"], 1) for r in warm],
             "median_baseline_s": round(st.median(r["t_baseline"] for r in steady), 1),
-            "reported_mean_speedup_spec": raw.get("mean_speedup_spec"),
         }
         for mode in MODES:
             entry[f"speedup_{mode}"] = round(
@@ -209,6 +197,18 @@ def cache_adapter() -> dict:
     return raw or {}
 
 
+def native_exact_replay() -> dict:
+    """Pixel-exact repeated-request replay on the native RTX 5090 service."""
+    raw = load_json(RESULTS / "native-exact-replay-5090.json")
+    return raw or {}
+
+
+def native_systems_ablation() -> dict:
+    """Historical quant/cache sweep plus the current sm_120 epilogue test."""
+    raw = load_json(RESULTS / "native-systems-ablation.json")
+    return raw or {}
+
+
 def tex_escape(text: str) -> str:
     return text.replace("_", r"\_").replace("%", r"\%").replace("&", r"\&")
 
@@ -327,6 +327,28 @@ def write_tables(data: dict, out_dir: Path) -> None:
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_knn_ablation.tex").write_text("\n".join(lines) + "\n")
 
+    # Full two-dimensional retrieval sweep: forecast horizon x neighbour count.
+    # The main table compares architectures; this appendix table exposes every
+    # retained residual-gate operating point.
+    by_horizon = data.get("knn", {}).get("by_horizon", {})
+    neighbor_counts = (1, 2, 4, 8)
+    lines = [
+        r"\begin{tabular}{@{}crrrrr@{}}",
+        r"\toprule",
+        r"horizon & calibrated local & $1$ neighbour & $2$ neighbours & $4$ neighbours & $8$ neighbours \\",
+        r"\midrule",
+    ]
+    for horizon in sorted(by_horizon, key=int):
+        row = by_horizon[horizon]
+        values = [f"{row['local_scaled']:.3f}"]
+        values.extend(
+            f"{row[f'gated_residual_k{neighbors}']:.3f}"
+            for neighbors in neighbor_counts
+        )
+        lines.append(f"{horizon} & {' & '.join(values)} \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_knn_horizon_grid.tex").write_text("\n".join(lines) + "\n")
+
     timing = data.get("knn", {}).get("timing", {}).get("median_ms_per_query", {})
     timing_rows = [
         ("Local calibrated", "local_scaled"),
@@ -386,14 +408,60 @@ def write_tables(data: dict, out_dir: Path) -> None:
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_knn_visual.tex").write_text("\n".join(lines) + "\n")
 
+    exact = data.get("native_exact_replay", {})
+    lines = [
+        r"\begin{tabular}{@{}llrrrr@{}}",
+        r"\toprule",
+        r"case & size & baseline (s) & prime (s) & replay (s) & prime/replay \\",
+        r"\midrule",
+    ]
+    for row in exact.get("rows", []):
+        lines.append(
+            f"{tex_escape(row['id'])} & {row['size']} & "
+            f"{row['baseline_wall_ms']/1000:.2f} & {row['prime_wall_ms']/1000:.2f} & "
+            f"{row['replay_wall_ms']/1000:.2f} & "
+            f"{row['prime_to_replay_speedup']:.3f}$\\times$ \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_native_exact_replay.tex").write_text("\n".join(lines) + "\n")
+
+    systems = data.get("native_systems", {})
+    quant = systems.get("quantization_3090", {})
+    lines = [
+        r"\begin{tabular}{@{}lrrl@{}}",
+        r"\toprule",
+        r"GGUF quant & seconds/iteration & VRAM (GiB) & outcome \\",
+        r"\midrule",
+    ]
+    for row in quant.get("rows", []):
+        outcome = "completed" if row["completed"] else tex_escape(row["failure"])
+        lines.append(
+            f"{tex_escape(row['quant'])} & {row['seconds_per_iteration']:.2f} & "
+            f"{row['vram_gib']:.1f} & {outcome} \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_native_quantization.tex").write_text("\n".join(lines) + "\n")
+
+    step_cache = systems.get("step_cache_3090", {})
+    lines = [
+        r"\begin{tabular}{@{}lrrr@{}}",
+        r"\toprule",
+        r"method & steps & median (s) & PSNR vs. 20-step (dB) \\",
+        r"\midrule",
+    ]
+    for row in step_cache.get("rows", []):
+        lines.append(
+            f"{tex_escape(row['method'])} & {row['steps']} & "
+            f"{row['median_seconds']:.2f} & {row['psnr_db']:.2f} \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_native_step_cache.tex").write_text("\n".join(lines) + "\n")
+
     # Macros so prose can cite a number without anyone retyping it.
     macros = []
     k3 = e2e.get(3, {})
-    macros.append(r"\newcommand{\ReportedSpeedupKThree}{%s}" % k3.get("reported_mean_speedup_spec", "?"))
-    macros.append(r"\newcommand{\CorrectedSpeedupKThree}{%.2f}" % k3.get("speedup_spec", 0))
-    macros.append(r"\newcommand{\CorrectedSkipKThree}{%.2f}" % k3.get("speedup_skip", 0))
-    macros.append(r"\newcommand{\WarmupBaseline}{%s}" % (k3.get("warmup_baseline_s") or ["?"])[0])
-    macros.append(r"\newcommand{\MedianBaseline}{%s}" % k3.get("median_baseline_s", "?"))
+    macros.append(r"\newcommand{\SpeedupSpecKThree}{%.2f}" % k3.get("speedup_spec", 0))
+    macros.append(r"\newcommand{\SpeedupSkipKThree}{%.2f}" % k3.get("speedup_skip", 0))
     macros.append(r"\newcommand{\CallReductionKThree}{%s}" % k3.get("call_reduction", "?"))
     k1 = e2e.get(1, {})
     macros.append(r"\newcommand{\PsnrTaylorKOne}{%.1f}" % k1.get("psnr_taylor", 0))
@@ -473,6 +541,31 @@ def write_tables(data: dict, out_dir: Path) -> None:
         macros.append(
             r"\newcommand{\CacheAdapterCpuMs}{%.2f}" % adapter_timing["median_ms"]
         )
+    exact_summary = data.get("native_exact_replay", {}).get("summary", {})
+    if exact_summary:
+        macros.append(
+            r"\newcommand{\NativeExactReplaySpeedup}{%.3f}"
+            % exact_summary["median_prime_to_replay_speedup"]
+        )
+        macros.append(
+            r"\newcommand{\NativeExactReplayPrompts}{%d}"
+            % exact_summary["prompts"]
+        )
+    fused = data.get("native_systems", {}).get("fused_residual_rms_5090", {})
+    if fused:
+        macros.append(r"\newcommand{\FusedResidualSpeedup}{%.2f}" % fused["speedup"])
+        macros.append(r"\newcommand{\FusedResidualTorchMs}{%.3f}" % fused["pytorch_ms"])
+        macros.append(r"\newcommand{\FusedResidualTritonMs}{%.3f}" % fused["triton_ms"])
+    combiner = data.get("native_systems", {}).get("factorized_neural_combiner", {})
+    if combiner:
+        macros.append(
+            r"\newcommand{\CombinerParameterReduction}{%.0f}"
+            % combiner["parameter_reduction"]
+        )
+        macros.append(
+            r"\newcommand{\CombinerParameters}{%s}"
+            % f"{combiner['factorized_parameter_count']:,}"
+        )
     (out_dir / "macros.tex").write_text("\n".join(macros) + "\n")
 
 
@@ -490,6 +583,8 @@ def main() -> int:
         "knn": knn_ablation(),
         "knn_visual": knn_visual(),
         "cache_adapter": cache_adapter(),
+        "native_exact_replay": native_exact_replay(),
+        "native_systems": native_systems_ablation(),
     }
     out_dir = Path(args.out)
     write_tables(data, out_dir)
@@ -498,15 +593,17 @@ def main() -> int:
     print(
         f"wrote {out_dir}/table_e2e.tex, table_gap.tex, "
         "table_forecaster_ablation.tex, table_schedule_ablation.tex, "
-        "table_knn_ablation.tex, table_knn_timing.tex, table_knn_visual.tex, "
-        "table_cache_adapter.tex, "
+        "table_knn_ablation.tex, table_knn_horizon_grid.tex, "
+        "table_knn_timing.tex, table_knn_visual.tex, "
+        "table_cache_adapter.tex, table_native_exact_replay.tex, "
+        "table_native_quantization.tex, table_native_step_cache.tex, "
         "macros.tex, analysis.json"
     )
     for k, e in sorted(data["e2e"].items()):
-        print(f"  k={k}: reported {e['reported_mean_speedup_spec']}x -> corrected "
-              f"{e['speedup_spec']}x (dropped {e['n_warmup']} warm-up row"
-              f"{'s' if e['n_warmup'] != 1 else ''}: {e['warmup_baseline_s']} s "
-              f"vs {e['median_baseline_s']} s median)")
+        print(
+            f"  k={k}: steady-state spec speedup {e['speedup_spec']}x "
+            f"from {e['n_steady']} rows; initialization rows excluded: {e['n_warmup']}"
+        )
     if data["gap"].get("degenerate"):
         for d in data["gap"]["degenerate"]:
             print(f"  excluded degenerate cell t={d['t']} k={d['k']}: relL2 {d['taylor1']:.3g}")

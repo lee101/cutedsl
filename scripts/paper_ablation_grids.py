@@ -346,6 +346,29 @@ def main() -> None:
         title="Skip-control draft-length ablation (seed 7)",
     )
 
+    # Exhaustive factorial view for the appendix.  Columns span both method and
+    # draft length; rows span every recorded prompt slice.  This includes all 54
+    # non-reference candidates in one auditable image rather than selecting a
+    # visually favourable subset.
+    full_columns = [("base", 3, "Reference\n16 real calls")]
+    for method, label in (
+        ("spec", "Learned"),
+        ("taylor", "Taylor"),
+        ("skip", "Skip control"),
+    ):
+        full_columns.extend(
+            (method, draft_k, f"{label}\nk={draft_k}")
+            for draft_k in (1, 2, 3)
+        )
+    _make_grid(
+        raw_root=args.raw_root,
+        output=args.figure_dir / "full_factorial_grid.png",
+        metrics=metrics,
+        columns=full_columns,
+        cell=230,
+        title="Full method × draft length × prompt sweep (seed 7)",
+    )
+
     args.generated_dir.mkdir(parents=True, exist_ok=True)
     _write_tables(args.generated_dir, metrics)
 
@@ -376,6 +399,10 @@ def main() -> None:
                 "path": str(args.figure_dir / "skip_length_grid.png"),
                 "sha256": _sha256(args.figure_dir / "skip_length_grid.png"),
             },
+            "full_factorial_grid": {
+                "path": str(args.figure_dir / "full_factorial_grid.png"),
+                "sha256": _sha256(args.figure_dir / "full_factorial_grid.png"),
+            },
         },
     }
     manifest_path = args.generated_dir / "ablation_manifest.json"
@@ -383,6 +410,7 @@ def main() -> None:
     print(f"wrote {args.figure_dir / 'method_style_grid.png'}")
     print(f"wrote {args.figure_dir / 'draft_length_grid.png'}")
     print(f"wrote {args.figure_dir / 'skip_length_grid.png'}")
+    print(f"wrote {args.figure_dir / 'full_factorial_grid.png'}")
     print(f"wrote {manifest_path}")
 
 

@@ -237,6 +237,19 @@ def _get_fused_adaln_rms_norm():
     return None
 
 
+def _get_fused_residual_rms():
+    # This candidate deliberately remains opt-in until it has passed the
+    # model-level and same-seed image gates on the deployment GPU.
+    setting = os.environ.get("CUTEZIMAGE_FUSED_RESIDUAL", "0").strip().lower()
+    if _use_triton() and setting in {"1", "true", "yes", "on"}:
+        try:
+            from cutezimage.triton_kernels.fused_residual_rms import fused_residual_rms
+            return fused_residual_rms
+        except ImportError:
+            pass
+    return None
+
+
 def _get_fused_qk_norm():
     if _use_triton():
         try:
@@ -261,6 +274,21 @@ def _get_fused_qk_norm_rope():
 def _fused_qkv_enabled() -> bool:
     setting = os.environ.get("CUTEZIMAGE_FUSED_QKV", "1").strip().lower()
     return setting not in {"0", "false", "no", "off"}
+
+
+def _residual_rms_update(
+    residual: torch.Tensor,
+    branch: torch.Tensor,
+    norm: "RMSNorm",
+    gate: torch.Tensor | None = None,
+) -> torch.Tensor:
+    fused_fn = _get_fused_residual_rms() if residual.is_cuda and not torch.is_grad_enabled() else None
+    if fused_fn is not None:
+        return fused_fn(residual, branch, norm.weight, gate=gate, eps=norm.eps)
+    normalized = norm(branch)
+    if gate is not None:
+        normalized = gate * normalized
+    return residual + normalized
 
 
 
@@ -530,10 +558,11 @@ class CuteZImageTransformerBlock(nn.Module):
                 # Attention with modulation (per-token scale is (B, S, D))
                 normed = self.attention_norm1(x) * scale_msa
                 attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-                x = x + gate_msa * self.attention_norm2(attn_out)
+                x = _residual_rms_update(x, attn_out, self.attention_norm2, gate_msa)
 
                 # FFN with modulation
-                x = x + gate_mlp * self.ffn_norm2(self.feed_forward(self.ffn_norm1(x) * scale_mlp))
+                ffn_out = self.feed_forward(self.ffn_norm1(x) * scale_mlp)
+                x = _residual_rms_update(x, ffn_out, self.ffn_norm2, gate_mlp)
             else:
                 # Global modulation (basic text-to-image mode)
                 mod = self.adaLN_modulation(adaln_input)
@@ -550,21 +579,23 @@ class CuteZImageTransformerBlock(nn.Module):
                 else:
                     normed = self.attention_norm1(x) * scale_msa
                 attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-                x = x + gate_msa * self.attention_norm2(attn_out)
+                x = _residual_rms_update(x, attn_out, self.attention_norm2, gate_msa)
 
                 # FFN with modulation
                 if _adaln_fn is not None:
                     ffn_input = _adaln_fn(x, scale_mlp.squeeze(1), self.ffn_norm1.weight, eps=self.ffn_norm1.eps)
                 else:
                     ffn_input = self.ffn_norm1(x) * scale_mlp
-                x = x + gate_mlp * self.ffn_norm2(self.feed_forward(ffn_input))
+                ffn_out = self.feed_forward(ffn_input)
+                x = _residual_rms_update(x, ffn_out, self.ffn_norm2, gate_mlp)
         else:
             # Standard (non-modulated) path
             normed = self.attention_norm1(x)
             attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-            x = x + self.attention_norm2(attn_out)
+            x = _residual_rms_update(x, attn_out, self.attention_norm2)
 
-            x = x + self.ffn_norm2(self.feed_forward(self.ffn_norm1(x)))
+            ffn_out = self.feed_forward(self.ffn_norm1(x))
+            x = _residual_rms_update(x, ffn_out, self.ffn_norm2)
 
         return x
 

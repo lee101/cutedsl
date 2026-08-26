@@ -1,0 +1,62 @@
+{
+  "protocol": {
+    "timestamp_utc": "2026-08-26T23:07:11Z",
+    "hardware": "NVIDIA GeForce RTX 5090 32 GB",
+    "software": "omniserve-native f2c6fa6 with stable-diffusion.cpp backend",
+    "model": "Z-Image-Turbo Q4_K GGUF",
+    "steps": 9,
+    "teleport_capture_step": 3,
+    "teleport_resume_step": 4,
+    "cache_storage": "CPU-resident opaque sd_latent_t, bounded LRU",
+    "workload_note": "Live shared GPU with the production service set resident; timings are paired within each request and are not an idle-device throughput claim.",
+    "comparison": "One unsplit baseline, one split cache-prime render, and one exact cache-hit replay per prompt/seed/size key.",
+    "artifact": "/sdb-disk/latentteleport-spec/native-evals/image_teleport_20260826T230347Z/report.json"
+  },
+  "summary": {
+    "passed": true,
+    "prompts": 3,
+    "pixel_exact_pairs": 3,
+    "median_prime_to_replay_speedup": 1.2170800485910596,
+    "stability_soak_cache_hits": 4,
+    "stability_soak_ooms": 0,
+    "stability_soak_median_speedup": 0.9776460293977853,
+    "stability_artifact": "/sdb-disk/latentteleport-spec/native-evals/image_teleport_20260826T232006Z/report.json",
+    "post_request_server_gpu_mib": [3824, 1818, 1818],
+    "memory_probe_note": "A fresh key was primed, followed by two exact hits. Post-request nvidia-smi samples returned to the same 1818 MiB value on both hits; these coarse samples demonstrate a plateau, not allocator-level peak-memory accounting."
+  },
+  "rows": [
+    {
+      "id": "product_glass_robot",
+      "size": "512x512",
+      "baseline_wall_ms": 21402.338,
+      "prime_wall_ms": 23852.663,
+      "replay_wall_ms": 19841.325,
+      "prime_to_replay_speedup": 1.2021708731649725,
+      "pixel_sha256": "49881253f022de7372d55b0482474f92b82008f7d8b547ff354fc285bca98646",
+      "cache_hit": true,
+      "passed": true
+    },
+    {
+      "id": "pixel_game_asset",
+      "size": "512x512",
+      "baseline_wall_ms": 23406.275,
+      "prime_wall_ms": 23784.548,
+      "replay_wall_ms": 18305.466,
+      "prime_to_replay_speedup": 1.2993139863251773,
+      "pixel_sha256": "cb1e8a33d9567c1d25b1bc5a4a1769bafe15b6642d4695ce78921b3fc666033b",
+      "cache_hit": true,
+      "passed": true
+    },
+    {
+      "id": "portrait_hands",
+      "size": "512x768",
+      "baseline_wall_ms": 25733.634,
+      "prime_wall_ms": 25752.742,
+      "replay_wall_ms": 21159.448,
+      "prime_to_replay_speedup": 1.2170800485910596,
+      "pixel_sha256": "ddf377df508e1e6b05e3c08b9fd85ad44c81a9328d4164db8a1d72d1e96248ba",
+      "cache_hit": true,
+      "passed": true
+    }
+  ]
+}

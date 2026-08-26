@@ -6,6 +6,8 @@
 \usepackage{tabularx}
 \usepackage{graphicx}
 \usepackage{subcaption}
+\usepackage{float}
+\usepackage{pdflscape}
 \usepackage{xcolor}
 \usepackage{microtype}
 \usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
@@ -58,6 +60,14 @@ Variance-aware shrinkage raises the decoded comparison to 0.7883 SSIM. A
 at every evaluated horizon, reaches \relltwo{} $=\CacheAdapterRelLTwo$, and
 raises decoded PSNR to 21.92\,dB; its 31\,KB weights are published with schedule
 coefficients and raw metrics.
+
+We separately test an exact serving shortcut for repeated prompt/seed/configuration
+keys. On a live shared RTX~5090 native service, CPU-resident latent replay is
+pixel-identical on all \NativeExactReplayPrompts{} cases and gives a paired
+median prime-to-replay speedup of $\NativeExactReplaySpeedup\times$. A
+four-hit soak completes without out-of-memory failure and post-request GPU
+allocation plateaus. This exact repeated-request tier is distinct from the
+approximate forecasters used for unseen prompts.
 
 The paper connects these mechanisms to Align Your Steps, consistency models,
 latent consistency models, flow matching, reflow, and feature-reuse methods;
@@ -142,10 +152,16 @@ A model--serving co-design problem whose useful operating point can change with 
     spatial adapter, evaluated by horizon and decoded in the full procedure
     grid. We publish the adapter weights and schedule table.
   \item \textbf{An operating-point bottleneck diagnosis}: call reductions
-    of $\CallReductionKThree\times$ yield $\CorrectedSpeedupKThree\times$
+    of $\CallReductionKThree\times$ yield $\SpeedupSpecKThree\times$
     wall-clock, and a skip-everything ablation caps at
-    $\CorrectedSkipKThree\times$, localising the bottleneck outside the
+    $\SpeedupSkipKThree\times$, localising the bottleneck outside the
     denoiser (Section~\ref{sec:e2e}).
+  \item \textbf{Native serving ablations} covering exact repeated-request
+    latent replay, GGUF quantisation, step caching, a multi-hit memory soak, and
+    an sm\_120 fused residual--RMS epilogue. We also replace an accidental
+    four-billion-parameter dense latent combiner with a bounded-rank auxiliary.
+    We distinguish pixel-exact serving results from approximate image retention and isolated kernel timing
+    (Section~\ref{sec:native-ablation}).
   \item \textbf{Image-level ablations} over learned speculation, Taylor
     forecasting, a destructive skip control, three draft lengths, and six
     prompt/style slices. We publish all panels as contact sheets with PSNR,
@@ -206,10 +222,14 @@ leaves fewer calls to remove.
 \paragraph{Training-free caching.}
 DeepCache \citep{ma2024deepcache} reuses U-Net skip features across adjacent
 steps. FORA \citep{selvaraju2024fora} caches attention and MLP outputs in
-diffusion transformers. TaylorSeer \citep{liu2025taylorseer} --- the line our
-codebase calls CG-Taylor --- reframes caching as \emph{forecasting}: rather than
+diffusion transformers. TeaCache \citep{liu2024teacache} uses changes in
+timestep-modulated inputs as a cheap signal for dynamic reuse. TaylorSeer
+\citep{liu2025taylorseer} reframes caching as \emph{forecasting}: rather than
 reusing a stale feature, extrapolate it with a Taylor series in the timestep
-index. Crucially, these methods are fitted to a specific model: the cache
+index. Confidence-Gated Taylor \citep{guan2025cgtaylor} moves the forecast to
+the last block and uses the first block's observed error to decide whether to
+reuse or fully compute. Crucially, these methods are fitted or calibrated to a
+specific model: the cache
 schedule and the expansion order are tuned per checkpoint, and transfer is not
 claimed. Our approach inherits that property and we make it explicit, since it
 is a real deployment cost rather than an incidental detail.
@@ -266,15 +286,13 @@ which is exactly a first-order Taylor step in the step index, in the spirit of
 \citet{liu2025taylorseer}. This is the floor every learned method must beat, and
 in our results it is a stubbornly high floor.
 
-The \textbf{confidence gate} would add the CG in CG-Taylor. Rather than a fixed
-skip schedule, it tracks the recent history of prediction error, estimates the
-derivative of that error, and maps the resulting confidence onto a number of
-refinement steps to spend --- high confidence, fewer real steps. The design
-intent is the diffusion analogue of forecasting one block into the network and
-committing to the whole step if that forecast lands: a cheap partial computation
-acts as a proxy for whether the expensive full computation can be skipped. The
-end-to-end Taylor arm reported below uses fixed $k$ and does not activate this
-gate; we therefore treat confidence gating as unvalidated system design.
+The \textbf{confidence gate} follows the motivation of CG-Taylor
+\citep{guan2025cgtaylor}. Rather than a fixed skip schedule, it would observe a
+cheap partial computation and commit to the forecast only when that signal
+predicts low error. The end-to-end Taylor arm reported below uses fixed $k$ and
+does not activate this gate; we therefore treat confidence gating in this
+codebase as unvalidated system design rather than borrowing the published
+CG-Taylor speed claims.
 
 \subsection{Aligned anchors and selective batch lanes}
 
@@ -382,6 +400,14 @@ latent. The image ablation uses six deliberately heterogeneous prompt slices:
 golden-hour landscape, dramatic portrait, snowy night, cyberpunk/neon,
 soft-light wildlife, and isometric illustration. These labels describe prompt
 content; they are not independent style datasets or LoRA adapters.
+
+Latency aggregates use five steady-state prompts per configuration. A baseline
+row is classified as initialization when it exceeds twice the within-run median
+baseline latency; one such row is present for each draft length and is excluded
+from timing only. All six saved prompt outputs remain in the image analysis.
+Relative-error aggregates likewise exclude targets whose recorded movement is
+below $10^{-4}$, because the metric divides by that movement. These rules are
+fixed for every method before comparison.
 
 \paragraph{Metrics.} Forecast quality is measured by
 \begin{equation}
@@ -645,13 +671,13 @@ decodes of recorded or forecasted endpoint latents with no content editing.}
 \label{fig:knn-visual}
 \end{figure}
 
-\subsection{End-to-end: locating the remaining latency}
+\subsection{End-to-end latency is fixed-cost limited}
 \label{sec:e2e}
 
 Table~\ref{tab:e2e} measures the current serving point. Across draft lengths $k \in
 \{1,2,3\}$, corresponding to $9$, $6$ and $5$ real denoiser calls out of $16$,
 measured speedup never exceeds $1.10\times$ and speculative walking specifically
-never exceeds $\CorrectedSpeedupKThree\times$.
+never exceeds $\SpeedupSpecKThree\times$.
 
 \begin{table}[ht]
 \centering
@@ -666,7 +692,7 @@ therefore bounds what any drafting scheme can achieve in this harness.}
 The diagnostic is the \emph{skip} column. That arm discards
 $\CallReductionKThree\times$ of the denoiser evaluations and replaces them with
 nothing --- its PSNR of $8.9$\,dB confirms the output is destroyed --- and it still
-only reaches $\CorrectedSkipKThree\times$. Its observed ceiling is therefore
+only reaches $\SpeedupSkipKThree\times$. Its observed ceiling is therefore
 about $1.10\times$ at this operating point, implying that roughly 90\% of the
 measured time is outside the removed calls. Inspecting the harness confirms it: the timed
 region wraps \texttt{zimage\_prepare} (text encoding) and \texttt{zimage\_decode}
@@ -682,15 +708,102 @@ lose on same-seed pixel retention. This sets a useful tuning reference: Taylor
 at $k=1$ is the current image-level baseline, and a learned replacement needs an
 image-aligned objective and validation-based checkpoint selection to displace it.
 
+\subsection{Native exact replay, quantisation, caching, and fusion}
+\label{sec:native-ablation}
+
+Approximate forecasting is only one tier of the serving problem. When prompt,
+negative prompt, size, step count, guidance, seed, and resume step all match a
+previous request, the native backend can resume from the stored intermediate
+latent without predicting anything. The cache key includes all of those fields,
+the value is a CPU-resident opaque \texttt{sd\_latent\_t}, and a bounded LRU
+controls host memory. Table~\ref{tab:native-exact-replay} compares an unsplit
+reference, a split prime that populates the cache, and the following exact hit.
+All three pixel hashes match within every row.
+
+\begin{table}[H]
+\centering
+\small
+\input{generated/table_native_exact_replay}
+\caption{Exact latent replay on the live shared RTX~5090 service with a
+9-step Z-Image-Turbo Q4\_K backend. Speedup compares the split prime with its
+cache-hit replay; the unsplit baseline is the exactness reference. Shared-load
+timings are paired observations, not idle-device throughput.}
+\label{tab:native-exact-replay}
+\end{table}
+
+The paired median is $\NativeExactReplaySpeedup\times$. A separate four-hit
+soak passed every cache-hit and pixel-hash gate without OOM. Its speed ratio was
+$0.978\times$ under heavier contention, so it is retained as a stability result
+and not pooled into the speed estimate. A fresh-key memory probe sampled the
+native server at 3824\,MiB after the prime and 1818\,MiB after each of two
+subsequent hits. These coarse post-request samples show a plateau rather than
+an allocator-level peak, but they directly rule out monotonically retained GPU
+state across those repetitions.
+
+Compression also has a non-monotonic speed trade. The historical RTX~3090
+sweep in Table~\ref{tab:native-quant} found Q8\_0 faster than Q4\_K despite its
+larger memory footprint; Q6\_K was slower and failed on its fifth generation.
+The current shared 5090 profile therefore uses Q4\_K for residency headroom,
+not because lower-bit weights measured faster.
+
+\begin{table}[H]
+\centering
+\small
+\input{generated/table_native_quantization}
+\caption{GGUF quantisation ablation on RTX~3090 at batch 1 and $1024^2$.
+Seconds/iteration exclude HTTP and image encoding. Q4\_K saves 2.6\,GiB but is
+about 5\% slower than Q8\_0; Q6\_K is neither a speed nor a reliability win.}
+\label{tab:native-quant}
+\end{table}
+
+The native step-cache sweep in Table~\ref{tab:native-step-cache} gives a second
+negative result. DBCache makes six steps faster, but its 15.12\,dB retention is
+effectively the three-step 15.07\,dB point at 40\% more latency. TaylorSeer is a
+no-op in this particular stable-diffusion.cpp Z-Image sampler path and pays
+bookkeeping overhead. This is an implementation- and operating-point result,
+not a contradiction of feature forecasting on the models evaluated by
+\citet{liu2025taylorseer}.
+
+\begin{table}[H]
+\centering
+\small
+\input{generated/table_native_step_cache}
+\caption{Native step-cache ablation at $1024^2$ on RTX~3090. Absolute blocks
+include thermal drift, so comparisons are confined to the sweep. On this
+already-distilled Turbo schedule, three uncached steps dominate six-step
+DBCache at nearly the same same-seed retention.}
+\label{tab:native-step-cache}
+\end{table}
+
+Finally, the new sm\_120 residual-add plus RMS-normalisation epilogue reduces
+the isolated production-shape kernel from \FusedResidualTorchMs{} to
+\FusedResidualTritonMs{}\,ms, a $\FusedResidualSpeedup\times$ microbenchmark
+speedup, and passes both kernel and transformer-block reference tests. It
+remains opt-in until full-pipeline image parity and end-to-end timing pass: 30
+uses of a sub-millisecond epilogue do not justify multiplying the isolated
+ratio into a generation claim.
+
+The OOM audit also exposed an architectural rather than allocator failure in
+the experimental neural latent combiner. Flattening a $16\times64\times64$
+latent into four dense layers implied 4.50 billion parameters, so constructing
+a second instance could consume the host before inference began. The replacement
+adaptively pools the latent pair to rank 64, conditions that state on the text
+embeddings, and decodes only a zero-initialised residual around the arithmetic
+mean. It has \CombinerParameters{} parameters, a
+$\CombinerParameterReduction\times$ reduction, and its 12-test production-shape
+suite peaks at 496\,MiB RSS. This is the useful form of a pruned auxiliary
+subnet here: factor the state before training rather than quantising an
+unnecessarily dense graph.
+
 \subsection{Image ablations across methods, styles, and draft lengths}
 \label{sec:image-ablations}
 
 The aggregate timing result is bottleneck-limited, and the images answer the
 complementary question of \emph{how} each approximation changes the sample.
-Figures~\ref{fig:method-style},
-\ref{fig:draft-grid}, and~\ref{fig:skip-grid} expose the entire recorded image
-sweep rather than one
-favourable prompt. The raw store contains 72 PNGs: six prompts, four arms, and
+Figure~\ref{fig:method-style} gives the compact method comparison, while
+Appendix~\ref{app:image-sweep} exposes the complete method $\times$ draft-length
+$\times$ prompt matrix rather than one favourable prompt. The raw store contains
+72 PNGs: six prompts, four arms, and
 three values of $k$. Because the baseline is regenerated identically for every
 $k$, this corresponds to six unique references and 54 candidate outputs. The
 figures include all six prompt slices, including the first timing row excluded
@@ -783,66 +896,49 @@ control is visibly destructive in every slice.}
 \label{fig:method-style}
 \end{figure}
 
-\begin{figure}[p]
-\centering
-\includegraphics[width=\textwidth]{figures/draft_length_grid.png}
-\caption{Draft-length hyperparameter ablation. Columns vary forecaster family
-and $k\in\{1,2,3\}$; rows vary prompt/style slice. Increasing $k$ means fewer
-real denoiser calls (9, 6, and 5 respectively) and progressively greater
-departure from the same-seed reference. Panel labels report PSNR and SSIM.}
-\label{fig:draft-grid}
-\end{figure}
+The complete grid and larger method-specific sheets are provided in
+Appendix~\ref{app:image-sweep}; the separation keeps panel labels readable while
+retaining every recorded output.
 
-\begin{figure}[p]
-\centering
-\includegraphics[width=\textwidth]{figures/skip_length_grid.png}
-\caption{Skip-control hyperparameter ablation. This arm performs the same real
-denoiser-call schedules as the learned and Taylor arms but supplies no latent
-correction. Its outputs deteriorate from weak structure at $k=1$ to coloured
-noise at $k=3$, demonstrating that call removal alone does not yield a viable
-sample.}
-\label{fig:skip-grid}
-\end{figure}
+\section{Discussion}
 
-\section{Recommendations}
-
-The ablations define a focused next tuning loop.
+The ablations support the following deployment decisions.
 
 \begin{enumerate}
-  \item \textbf{Tune from the Taylor $k=1$ reference.} It is the best measured
-    speed/retention point: $\SpeedupTaylorKOne\times$ at
-    $\PsnrTaylorKOne$\,dB PSNR, with no learned checkpoint or extra model
-    allocation.
-  \item \textbf{Promote schedule-calibrated momentum into the next image
-    sweep.} Its five-fold trajectory error is 20--37\% below raw Taylor through
-    $k=8$ and it
-    captures nearly all of the benefit of the more complex two-delta fit. Test
-    both uniform and aligned horizons with the same seeds before claiming an
-    image-level gain.
-  \item \textbf{Use aligned rather than uniform anchors.} At a four-interval
-    budget, schedule search contributes an additional 12\% latent-proxy
-    improvement beyond calibration. Refit the timetable for every model,
-    resolution, solver, and step count rather than copying $[8,1,1,2]$.
-  \item \textbf{Retrieve residuals, not complete moves.} Keep a prompt-similar
-    pool in host memory, prune it with the observed motion descriptor, and
-    prefetch only the retained $k$ residual records. The eight-neighbour gate is
-    the best measured setting and stays below one millisecond in the resident
-    CPU predictor benchmark.
-  \item \textbf{Align learned training with the output metric.} Save the best
-    validation checkpoint and add decoded perceptual or preference supervision;
-    the present relative-L2 objective improves latent error without beating the
-    Taylor image baseline.
-  \item \textbf{Test removal of the final step for this exact schedule.} The
-    stored float16 trajectory duplicates its final latent. Gate the optimisation
-    on a runtime equality/tolerance check rather than generalising it to other
-    schedulers or step counts.
-  \item \textbf{Report denoiser-only and end-to-end timing together.} Warm up
-    every arm, cache prompt embeddings where the serving workload permits it,
-    and separate sampling from VAE decode. This reveals both the method gain and
-    the user-visible gain.
-  \item \textbf{Expand the operating-point grid} to higher resolution, longer
-    or undistilled schedules, and batches greater than one. Those settings give
-    saved denoiser calls enough share of total time to matter.
+  \item \textbf{Serve exact repeats from bounded latent replay first.} It is
+    the only measured tier with no quality trade: all tested pixels match, the
+    paired median is $\NativeExactReplaySpeedup\times$, and the repeated-hit
+    memory probe plateaus. Keep the full generation configuration in the key,
+    keep opaque latents in host memory, and use a bounded LRU.
+  \item \textbf{For unseen prompts, tune from Taylor at $k=1$.} It is the best
+    measured image speed/retention point: $\SpeedupTaylorKOne\times$ at
+    $\PsnrTaylorKOne$\,dB, with no learned checkpoint or extra model residency.
+    The learned walker and larger $k$ values remain experimental.
+  \item \textbf{Promote calibrated momentum and aligned anchors together.}
+    Schedule calibration lowers five-fold trajectory error by 20--37\% through
+    $k=8$, and anchor search adds another latent-proxy gain. Refit both for
+    every model, resolution, solver, and step count; the current image-level
+    evidence remains raw Taylor, not the calibrated rule.
+  \item \textbf{Retrieve small residuals only when the horizon justifies it.}
+    Keep the prompt pool and full records in host memory, motion-prune to eight
+    neighbours, and prefetch only their residuals. The decoded gain is modest;
+    neither the 7,312-parameter adapter nor dense attention earns default GPU
+    residency at this operating point.
+  \item \textbf{Choose the memory profile independently from the speed
+    profile.} Q8\_0 measured faster when it fit; Q4\_K is the shared-GPU
+    headroom choice. Bound Python pipeline variants to one by default, clear
+    evicted references, retain VAE tiling/offload controls, and admit full-BF16
+    or compiled variants only under a device-memory lease. Keep the fused
+    residual--RMS path opt-in until full-image parity and end-to-end timing pass.
+    Use the rank-64 latent combiner when a learned merge is required; the dense
+    flattened form is prohibited by construction.
+  \item \textbf{Gate every promotion with a phase-separated, repeated
+    benchmark.} Warm every arm, rotate execution order, cache prompt embeddings
+    only when the workload permits it, and report prompt encode, denoiser, VAE
+    decode, end-to-end latency, peak VRAM, OOM count, PSNR, SSIM, perceptual
+    score, and the complete image grid. Also test the duplicated final latent
+    behind a runtime equality/tolerance guard rather than assuming the result
+    transfers to another schedule.
 \end{enumerate}
 
 \section{Production Use Cases and Composability}
@@ -945,6 +1041,15 @@ allocated memory withheld from the next caller. This is what would allow a draft
 model to be resident at all, which is the natural next step for the speculative
 family.
 
+The accompanying Python loader now bounds base and ControlNet pipeline caches
+to one configuration each by default. Changing dtype, compile mode, offload
+mode, device, or model no longer silently retains every multi-gigabyte variant;
+LRU eviction drops references, runs collection, and returns unused CUDA blocks.
+Setting the bound to zero disables reuse, and an explicit clear function supports
+test isolation and low-memory recovery. The native exact-replay cache is a
+different object: it stores bounded CPU latents, so a cache hit does not pin a
+second transformer or grow with resolution on the GPU.
+
 The calibrated forecaster itself needs only a small table of
 $(t,k,\alpha_{t,k})$ scalars and should remain device-resident. Larger trajectory
 records belong in pinned host memory or NVMe, with prompt retrieval and
@@ -964,6 +1069,9 @@ AdaLN --- which accelerate the denoiser itself and are therefore complementary t
 everything in this paper: they make each step cheaper, whereas we tried to make
 steps fewer. Given the Amdahl result of Section~\ref{sec:e2e}, kernel work of
 this kind is currently the better investment of the two at our operating point.
+The new residual--RMS epilogue is deliberately excluded from that default set
+until its full-pipeline gate passes, despite the positive microbenchmark in
+Section~\ref{sec:native-ablation}.
 At a 30-step quality mode, however, denoising should occupy a much larger share
 of latency; step reduction, per-step fusion, and memory-aware scheduling can
 then compound over different portions of the request.
@@ -1008,7 +1116,7 @@ in Section~\ref{sec:production-use-cases}.
 Table~\ref{tab:schedule-ablation} resets every interval to a latent from the
 recorded teacher trajectory. A real branched sampler feeds an approximate
 teleported state into its next denoiser call, so errors can compound or be
-corrected in ways this table cannot represent. The 30-step/four-call target,
+damped in ways this table cannot represent. The 30-step/four-call target,
 active-lane batch compaction, pairwise diversity, and decoded images from
 calibrated momentum remain queued production experiments. We do not convert the
 proxy improvement into an image-quality or latency claim. Because the stored
@@ -1016,10 +1124,13 @@ proxy improvement into an image-quality or latency claim. Because the stored
 table also lacks a coefficient for the first interval; the implementation
 explicitly falls back to unit-scale Taylor there.
 
-\paragraph{No exact verification.} Unlike speculative decoding, our accepted
-latents are not guaranteed to match the target model's. Every method here trades
-quality for time, and the confidence gate bounds that trade heuristically rather
-than provably.
+\paragraph{No exact verification for unseen-prompt forecasts.} The Taylor,
+walker, calibrated, and retrieved latents are not guaranteed to match the target
+model's. Each trades quality for time, and a confidence gate bounds that trade
+heuristically rather than provably. Exact prompt-latent replay is the narrow
+exception because it resumes an already-computed deterministic request; it
+does not generalise to a new key and should not be counted as speculative
+verification.
 
 \section{Conclusion}
 
@@ -1044,13 +1155,21 @@ make explicit.
 
 At the tested $512^2$/16-step serving point, fixed text and VAE work make
 denoiser-only optimization the informative speed metric; the measured
-end-to-end result is $\CorrectedSpeedupKThree\times$. This sets the systems
-priority: overlap or fuse fixed work while moving the method to a longer
-quality schedule. The immediate milestone is a held-out 30-step teacher experiment with
-approximately four real calls, decoded-image and preference evaluation, and
-denoiser-only timing alongside end-to-end timing. A batch-of-four run should
-then test staggered schedules with active-lane compaction and pairwise diversity.
-Confidence gating and LoRA-space transport remain distinct follow-on hypotheses.
+end-to-end speculative result is only $\SpeedupSpecKThree\times$. The production
+hierarchy is therefore narrower than the mechanism menu: exact bounded replay
+for repeated keys; Taylor $k=1$ for an explicitly approximate unseen-prompt
+mode; Q4 for shared-GPU headroom but Q8 for speed when it fits; and fused
+epilogues only after full-image parity. The exact tier measured
+$\NativeExactReplaySpeedup\times$ on its three-case paired run and survived the
+multi-hit stability soak, while the $\FusedResidualSpeedup\times$ residual--RMS
+number remains an isolated kernel result.
+
+The next research milestone is a held-out 30-step teacher experiment with
+approximately four real calls, decoded-image and preference evaluation,
+phase-separated timing, and peak-memory/OOM reporting. A batch-of-four run
+should then test staggered schedules with active-lane compaction and pairwise
+diversity. Confidence gating, live retrieved-residual prefetch, pruned students,
+and LoRA-space transport remain follow-on hypotheses rather than defaults.
 
 \subsubsection*{Reproducibility}
 
@@ -1060,6 +1179,103 @@ remain in the experiment store; the committed grids contain every panel used in
 the paper. The serving gateway is in
 \citet{omniservenative}. The LoRA adapter library is not open source; its
 integration mechanism is described in Section~\ref{sec:lora}.
+
+\clearpage
+\appendix
+
+\section{Complete Image Hyperparameter Sweep}
+\label{app:image-sweep}
+
+The image experiment is a full factorial sweep over forecaster family (learned
+walker, Taylor momentum, or destructive skip control), draft length
+$k\in\{1,2,3\}$, and six prompt slices, with one fixed seed. The three
+draft lengths correspond to 9, 6, and 5 real denoiser calls. Every non-reference
+cell is labelled with PSNR and SSIM against the same-seed 16-call output. The
+landscape sheet below contains all 54 candidate images and the six references;
+no cell is selected or omitted after viewing the output.
+
+\clearpage
+\begin{landscape}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.88\textheight,keepaspectratio]{figures/full_factorial_grid.png}
+\caption{Complete method $\times$ draft-length $\times$ prompt sweep. Columns
+vary method and $k$; rows vary prompt content. This is the exhaustive visual
+counterpart to Tables~\ref{tab:image-hyperparams} and
+\ref{tab:image-styles}.}
+\label{fig:full-factorial-grid}
+\end{figure}
+\end{landscape}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth,height=0.88\textheight,keepaspectratio]{figures/draft_length_grid.png}
+\caption{Learned and Taylor draft-length slices at larger print scale. Increasing
+$k$ removes more real denoiser calls and increases texture, geometry, and layout
+drift.}
+\label{fig:draft-grid}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth,height=0.88\textheight,keepaspectratio]{figures/skip_length_grid.png}
+\caption{Destructive skip-control slice at larger print scale. The control uses
+the same call schedules but supplies no forecasted movement; structure collapses
+across every prompt slice.}
+\label{fig:skip-grid}
+\end{figure}
+
+\clearpage
+\section{Two-Dimensional Retrieval Sweep}
+\label{app:retrieval-sweep}
+
+Table~\ref{tab:knn-horizon-grid} expands the aggregate retrieval result into its
+two tuned dimensions. Rows increase forecast horizon and columns increase the
+number of motion-pruned neighbours. The comparison uses held-out trajectories
+in every cell. Retrieval helps at every horizon, and the gain grows with horizon
+and neighbourhood size; at horizon 8 the eight-neighbour residual lowers
+\relltwo{} from 0.333 to 0.315.
+
+\begin{table}[H]
+\centering
+\small
+\input{generated/table_knn_horizon_grid}
+\caption{Held-out gated-residual sweep by forecast horizon and neighbour count.
+Cells are five-fold mean \relltwo{}; lower is better.}
+\label{tab:knn-horizon-grid}
+\end{table}
+
+\section{Experiment and Artifact Inventory}
+\label{app:inventory}
+
+\begin{table}[H]
+\centering
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}p{0.27\textwidth}>{\raggedright\arraybackslash}X@{}}
+\toprule
+experiment & evaluated units & sweep dimensions and artifacts \\
+\midrule
+Trajectory forecast & 200 trajectories; 375 held-out $(t,k)$ cells & Eight horizons, five predictor families, five folds. \\
+Anchor placement & 200 trajectories; 15 fold/budget searches & 3, 4, and 6 intervals; uniform, aligned, and four staggered schedules. \\
+Trajectory retrieval & 200 trajectories; 185 held-out step/horizon cells & Four horizons, four neighbour counts, direct-transport and residual architectures. \\
+Cache adapter & 160 train and 40 test trajectories & Four horizons; local, scalar gate, variance shrinkage, and 7,312-parameter adapter. \\
+Decoded cache forecast & Six held-out prompts; five procedures & Endpoint reference plus four forecast procedures, with PSNR and SSIM. \\
+End-to-end images & Six prompts; 72 saved PNGs & Three draft lengths, four arms, per-panel hashes, PSNR, and SSIM. \\
+Steady-state timing & Five prompts per $k$; three draft lengths & Denoiser calls, end-to-end speedup, and PSNR. \\
+Native exact replay & Three paired cases plus a four-hit soak & Unsplit reference, split prime, exact replay hashes, latency, cache metadata, and post-request memory samples. \\
+Native systems & Three quants, five step-cache points, one fused epilogue & Transformer iteration time, VRAM, failure status, PSNR, and sm\_120 kernel/reference timing. \\
+\bottomrule
+\end{tabularx}
+\caption{Inventory of the experimental evidence used in the paper. Counts refer
+to evaluated units, not augmentation or repeated rendering of the same panel.}
+\label{tab:experiment-inventory}
+\end{table}
+
+The generated tables and numeric macros are reconstructed by
+\path{scripts/paper_analysis.py}. Image sheets and the per-panel SHA-256 manifest
+are reconstructed by \path{scripts/paper_ablation_grids.py}. Raw summaries live
+under \path{results/speculative}; the 200 float16 trajectories and full-resolution
+PNG source panels remain in the experiment store because of their size.
 
 \bibliography{refs}
 

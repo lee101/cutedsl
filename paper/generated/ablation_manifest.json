@@ -693,6 +693,10 @@
     "skip_length_grid": {
       "path": "paper/figures/skip_length_grid.png",
       "sha256": "8696307f6f380a327ee76bee6dc568dc379b9c09c630ee13c1646ea1a05346af"
+    },
+    "full_factorial_grid": {
+      "path": "paper/figures/full_factorial_grid.png",
+      "sha256": "66747574129c7cf370e1cfeec4dc4b8b20c144c2441e95ef1386b318f72c3533"
     }
   }
 }

@@ -12,10 +12,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "rms_norm.h"
 #include "silu_gate.h"
+#include "chronos_preprocess.h"
 
 #define ASSERT_CLOSE(a, b, tol, msg) \
     if (fabsf((a) - (b)) > (tol)) { \
@@ -133,6 +135,103 @@ static void test_silu_gate_gating(void) {
     printf("ok\n");
 }
 
+static void test_chronos_preprocess_padding_and_nan(void) {
+    tests++;
+    printf("test_chronos_preprocess_padding_and_nan... ");
+    float input[] = {1.0f, NAN, 3.0f};
+    float patched[12];
+    float attention[2];
+    float location[1];
+    float scale[1];
+    cute_chronos_status status = cute_chronos_preprocess_f32(
+        patched, attention, location, scale, input, 1, 3, 2, 8, 0);
+    if (status != CUTE_CHRONOS_OK) {
+        printf("FAIL: status=%d\n", status);
+        failures++;
+        return;
+    }
+    ASSERT_CLOSE(location[0], 2.0f, 1e-6f, "chronos location");
+    ASSERT_CLOSE(scale[0], 1.0f, 1e-6f, "chronos scale");
+    ASSERT_CLOSE(patched[0], -0.5f, 1e-6f, "left-pad time");
+    ASSERT_CLOSE(patched[2], 0.0f, 1e-6f, "left-pad value");
+    ASSERT_CLOSE(patched[4], 0.0f, 1e-6f, "left-pad mask");
+    ASSERT_CLOSE(patched[3], -1.0f, 1e-6f, "first normalized value");
+    ASSERT_CLOSE(patched[5], 1.0f, 1e-6f, "first value mask");
+    ASSERT_CLOSE(patched[8], 0.0f, 1e-6f, "nan normalized value");
+    ASSERT_CLOSE(patched[10], 0.0f, 1e-6f, "nan mask");
+    ASSERT_CLOSE(patched[9], 1.0f, 1e-6f, "last normalized value");
+    ASSERT_CLOSE(attention[0], 1.0f, 1e-6f, "first patch attention");
+    ASSERT_CLOSE(attention[1], 1.0f, 1e-6f, "second patch attention");
+    printf("ok\n");
+}
+
+static void test_chronos_preprocess_all_nan_and_constant(void) {
+    tests++;
+    printf("test_chronos_preprocess_all_nan_and_constant... ");
+    float input[] = {NAN, NAN, 4.0f, 4.0f};
+    float patched[12];
+    float attention[2];
+    float location[2];
+    float scale[2];
+    cute_chronos_status status = cute_chronos_preprocess_f32(
+        patched, attention, location, scale, input, 2, 2, 2, 2, 1);
+    if (status != CUTE_CHRONOS_OK) {
+        printf("FAIL: status=%d\n", status);
+        failures++;
+        return;
+    }
+    ASSERT_CLOSE(location[0], 0.0f, 1e-6f, "all-nan location");
+    ASSERT_CLOSE(scale[0], 1.0f, 1e-6f, "all-nan scale");
+    ASSERT_CLOSE(attention[0], 0.0f, 1e-6f, "all-nan attention");
+    ASSERT_CLOSE(location[1], 4.0f, 1e-6f, "constant location");
+    ASSERT_CLOSE(scale[1], 1e-5f, 1e-8f, "constant scale");
+    ASSERT_CLOSE(attention[1], 1.0f, 1e-6f, "constant attention");
+    printf("ok\n");
+}
+
+static void test_chronos_preprocess_truncates_tail(void) {
+    tests++;
+    printf("test_chronos_preprocess_truncates_tail... ");
+    float input[] = {100.0f, 200.0f, 1.0f, 3.0f};
+    float patched[6];
+    float attention[1];
+    float location[1];
+    float scale[1];
+    cute_chronos_status status = cute_chronos_preprocess_f32(
+        patched, attention, location, scale, input, 1, 4, 2, 2, 1);
+    if (status != CUTE_CHRONOS_OK) {
+        printf("FAIL: status=%d\n", status);
+        failures++;
+        return;
+    }
+    ASSERT_CLOSE(location[0], 2.0f, 1e-6f, "truncated location");
+    ASSERT_CLOSE(scale[0], 1.0f, 1e-6f, "truncated scale");
+    ASSERT_CLOSE(patched[2], asinhf(-1.0f), 1e-6f, "truncated first");
+    ASSERT_CLOSE(patched[3], asinhf(1.0f), 1e-6f, "truncated last");
+    printf("ok\n");
+}
+
+static void test_chronos_preprocess_rejects_bad_sizes(void) {
+    tests++;
+    printf("test_chronos_preprocess_rejects_bad_sizes... ");
+    float value = 0.0f;
+    cute_chronos_status status = cute_chronos_preprocess_f32(
+        &value, &value, &value, &value, &value, 1, 1, 0, 1, 0);
+    if (status != CUTE_CHRONOS_INVALID_ARGUMENT) {
+        printf("FAIL: zero patch status=%d\n", status);
+        failures++;
+        return;
+    }
+    status = cute_chronos_preprocess_f32(
+        &value, &value, &value, &value, &value, SIZE_MAX, 2, 1, 1, 0);
+    if (status != CUTE_CHRONOS_SIZE_OVERFLOW) {
+        printf("FAIL: overflow status=%d\n", status);
+        failures++;
+        return;
+    }
+    printf("ok\n");
+}
+
 int main(void) {
     printf("CuteDSL C Kernel Tests\n");
     printf("======================\n\n");
@@ -142,6 +241,10 @@ int main(void) {
     test_rms_norm_multi_row();
     test_silu_gate_basic();
     test_silu_gate_gating();
+    test_chronos_preprocess_padding_and_nan();
+    test_chronos_preprocess_all_nan_and_constant();
+    test_chronos_preprocess_truncates_tail();
+    test_chronos_preprocess_rejects_bad_sizes();
 
     printf("\n%d tests, %d failures\n", tests, failures);
     return failures > 0 ? 1 : 0;

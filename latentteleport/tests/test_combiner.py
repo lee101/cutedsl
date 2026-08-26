@@ -31,6 +31,10 @@ class TestSLERP:
 
 
 class TestNeuralCombiner:
+    def test_production_shape_parameter_count_is_bounded(self):
+        net = NeuralCombinerNet(latent_dim=16 * 64 * 64, clip_dim=2560)
+        assert sum(parameter.numel() for parameter in net.parameters()) < 5_000_000
+
     def test_forward_shape(self):
         net = NeuralCombinerNet(latent_dim=16 * 64 * 64, clip_dim=2560)
         z0 = torch.randn(2, 16, 1, 64, 64)
@@ -39,6 +43,7 @@ class TestNeuralCombiner:
         e1 = torch.randn(2, 2560)
         out = net(z0, z1, e0, e1)
         assert out.shape == z0.shape
+        assert torch.equal(out, 0.5 * (z0 + z1))
 
     def test_combiner_wrapper(self):
         net = NeuralCombinerNet(latent_dim=16 * 64 * 64, clip_dim=2560)

@@ -6,8 +6,8 @@ LDFLAGS = -lm -fopenmp
 
 all: test_kernels
 
-test_kernels: test_kernels.c rms_norm.h silu_gate.h
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+test_kernels: test_kernels.c rms_norm.h silu_gate.h chronos_preprocess.h chronos_preprocess.c
+	$(CC) $(CFLAGS) -o $@ test_kernels.c chronos_preprocess.c $(LDFLAGS)
 
 test: test_kernels
 	./test_kernels

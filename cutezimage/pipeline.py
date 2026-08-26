@@ -14,7 +14,9 @@ the diffusers ControlNet model unchanged.
 
 from __future__ import annotations
 
+import gc
 import os
+from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -53,8 +55,8 @@ ZIMAGE_CONTROLNET_MODEL_PATH = os.getenv("ZIMAGE_CONTROLNET_MODEL_PATH")
 ZIMAGE_CONTROLNET_FILENAME = os.getenv("ZIMAGE_CONTROLNET_FILENAME")
 
 _PIPELINE_LOCK = Lock()
-_ZIMAGE_PIPELINE_CACHE: dict[tuple[Any, ...], tuple[Any, Any]] = {}
-_ZIMAGE_CONTROLNET_CACHE: dict[tuple[Any, ...], Any] = {}
+_ZIMAGE_PIPELINE_CACHE: OrderedDict[tuple[Any, ...], tuple[Any, Any]] = OrderedDict()
+_ZIMAGE_CONTROLNET_CACHE: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -62,6 +64,33 @@ def _env_flag(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_cache_size(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return min(8, max(0, int(value)))
+    except ValueError:
+        return default
+
+
+def _trim_cache(cache: OrderedDict, max_entries: int) -> list[Any]:
+    evicted = []
+    while len(cache) > max_entries:
+        _, value = cache.popitem(last=False)
+        evicted.append(value)
+    return evicted
+
+
+def _release_evicted(values: list[Any]) -> None:
+    if not values:
+        return
+    values.clear()
+    gc.collect()
+    if torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
 
 
 def _dtype_key(dtype: torch.dtype | None) -> str:
@@ -258,11 +287,20 @@ def _pipeline_cache_key(
     )
 
 
-def clear_pipeline_caches() -> None:
-    """Clear all cached Z-Image pipeline instances."""
+def clear_pipeline_caches(*, release_memory: bool = True) -> None:
+    """Clear cached pipelines and optionally return unused CUDA blocks.
+
+    Each compile/offload key can otherwise retain another multi-gigabyte
+    transformer, which commonly appears as a successful first request followed
+    by an OOM after a configuration or resolution change.
+    """
     with _PIPELINE_LOCK:
+        released = list(_ZIMAGE_PIPELINE_CACHE.values())
+        released.extend(_ZIMAGE_CONTROLNET_CACHE.values())
         _ZIMAGE_PIPELINE_CACHE.clear()
         _ZIMAGE_CONTROLNET_CACHE.clear()
+    if release_memory:
+        _release_evicted(released)
 
 
 def get_zimage_pipelines(
@@ -287,13 +325,10 @@ def get_zimage_pipelines(
         enable_cpu_offload,
     )
 
-    cached = _ZIMAGE_PIPELINE_CACHE.get(key)
-    if cached is not None:
-        return cached
-
     with _PIPELINE_LOCK:
         cached = _ZIMAGE_PIPELINE_CACHE.get(key)
         if cached is not None:
+            _ZIMAGE_PIPELINE_CACHE.move_to_end(key)
             return cached
 
         zimage_pipe = ZImagePipeline.from_pretrained(
@@ -320,7 +355,12 @@ def get_zimage_pipelines(
 
         cached = (zimage_pipe, zimage_img2img_pipe)
         _ZIMAGE_PIPELINE_CACHE[key] = cached
-        return cached
+        evicted = _trim_cache(
+            _ZIMAGE_PIPELINE_CACHE,
+            _env_cache_size("CUTEZIMAGE_PIPELINE_CACHE_SIZE", 1),
+        )
+    _release_evicted(evicted)
+    return cached
 
 
 def _load_controlnet_model(
@@ -388,9 +428,11 @@ def get_zimage_controlnet_pipeline(
             device,
             enable_cpu_offload,
         )
-        cached = _ZIMAGE_CONTROLNET_CACHE.get(key)
-        if cached is not None:
-            return cached
+        with _PIPELINE_LOCK:
+            cached = _ZIMAGE_CONTROLNET_CACHE.get(key)
+            if cached is not None:
+                _ZIMAGE_CONTROLNET_CACHE.move_to_end(key)
+                return cached
     else:
         key = None
 
@@ -418,13 +460,20 @@ def get_zimage_controlnet_pipeline(
 
     _configure_pipeline(pipe, device=device, enable_cpu_offload=enable_cpu_offload)
 
+    evicted = []
     if key is not None:
         with _PIPELINE_LOCK:
             cached = _ZIMAGE_CONTROLNET_CACHE.get(key)
             if cached is None:
                 _ZIMAGE_CONTROLNET_CACHE[key] = pipe
+                evicted = _trim_cache(
+                    _ZIMAGE_CONTROLNET_CACHE,
+                    _env_cache_size("CUTEZIMAGE_CONTROLNET_CACHE_SIZE", 1),
+                )
             else:
                 pipe = cached
+                _ZIMAGE_CONTROLNET_CACHE.move_to_end(key)
+    _release_evicted(evicted)
     return pipe
 
 
