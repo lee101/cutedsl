@@ -63,11 +63,11 @@ coefficients and raw metrics.
 
 We separately test an exact serving shortcut for repeated prompt/seed/configuration
 keys. On a live shared RTX~5090 native service, CPU-resident latent replay is
-pixel-identical on all \NativeExactReplayPrompts{} cases and gives a paired
-median prime-to-replay speedup of $\NativeExactReplaySpeedup\times$. A
-four-hit soak completes without out-of-memory failure and post-request GPU
-allocation plateaus. This exact repeated-request tier is distinct from the
-approximate forecasters used for unseen prompts.
+pixel-identical on all fresh-key promotion cases and gives a paired median
+prime-to-replay speedup of $\NativeLateReplaySpeedup\times$ when resuming at
+the final scheduled step. A four-hit soak completes without out-of-memory
+failure and post-request GPU allocation plateaus. This exact repeated-request
+tier is distinct from the approximate forecasters used for unseen prompts.
 
 The paper connects these mechanisms to Align Your Steps, consistency models,
 latent consistency models, flow matching, reflow, and feature-reuse methods;
@@ -740,6 +740,33 @@ subsequent hits. These coarse post-request samples show a plateau rather than
 an allocator-level peak, but they directly rule out monotonically retained GPU
 state across those repetitions.
 
+A subsequent resume-step sweep tests how much of the deterministic trajectory
+to retain. Table~\ref{tab:native-resume-step} uses one 512$^2$ case and two
+replays per prime. All five settings are pixel exact. The latest checkpoint,
+step~8 of 9, is fastest in the paired sweep at $1.530\times$ and is then promoted
+with fresh seed keys across three cases. Those primes are explicitly required
+to be cache misses; the three replay speedups are $1.331\times$,
+$1.491\times$, and $1.583\times$, for a
+$\NativeLateReplaySpeedup\times$ median.
+
+\begin{table}[H]
+\centering
+\small
+\input{generated/table_native_resume_step}
+\caption{Exact replay resume-step sweep on the live shared RTX~5090. Every
+prime is the first request for its step-specific key and each replay hash
+matches its unsplit reference. Shared-load variance makes the intermediate
+ordering noisy, while the latest exact state consistently saves the most
+remaining denoiser work.}
+\label{tab:native-resume-step}
+\end{table}
+
+The serving default is therefore dynamic \texttt{steps-1}, rather than a fixed
+step~7. The benchmark adds a seed-offset cache buster, rejects an unexpectedly
+warm prime, and retries only transient 429/503 admission responses. These gates
+were necessary: without them, a hit-versus-hit rerun briefly appeared to erase
+the speedup, and shared-GPU backpressure aborted another otherwise valid arm.
+
 Compression also has a non-monotonic speed trade. The historical RTX~3090
 sweep in Table~\ref{tab:native-quant} found Q8\_0 faster than Q4\_K despite its
 larger memory footprint; Q6\_K was slower and failed on its fifth generation.
@@ -907,7 +934,7 @@ The ablations support the following deployment decisions.
 \begin{enumerate}
   \item \textbf{Serve exact repeats from bounded latent replay first.} It is
     the only measured tier with no quality trade: all tested pixels match, the
-    paired median is $\NativeExactReplaySpeedup\times$, and the repeated-hit
+    fresh-key paired median is $\NativeLateReplaySpeedup\times$, and the repeated-hit
     memory probe plateaus. Keep the full generation configuration in the key,
     keep opaque latents in host memory, and use a bounded LRU.
   \item \textbf{For unseen prompts, tune from Taylor at $k=1$.} It is the best
@@ -1160,7 +1187,7 @@ hierarchy is therefore narrower than the mechanism menu: exact bounded replay
 for repeated keys; Taylor $k=1$ for an explicitly approximate unseen-prompt
 mode; Q4 for shared-GPU headroom but Q8 for speed when it fits; and fused
 epilogues only after full-image parity. The exact tier measured
-$\NativeExactReplaySpeedup\times$ on its three-case paired run and survived the
+$\NativeLateReplaySpeedup\times$ on its fresh-key three-case paired run and survived the
 multi-hit stability soak, while the $\FusedResidualSpeedup\times$ residual--RMS
 number remains an isolated kernel result.
 
@@ -1262,7 +1289,7 @@ Cache adapter & 160 train and 40 test trajectories & Four horizons; local, scala
 Decoded cache forecast & Six held-out prompts; five procedures & Endpoint reference plus four forecast procedures, with PSNR and SSIM. \\
 End-to-end images & Six prompts; 72 saved PNGs & Three draft lengths, four arms, per-panel hashes, PSNR, and SSIM. \\
 Steady-state timing & Five prompts per $k$; three draft lengths & Denoiser calls, end-to-end speedup, and PSNR. \\
-Native exact replay & Three paired cases plus a four-hit soak & Unsplit reference, split prime, exact replay hashes, latency, cache metadata, and post-request memory samples. \\
+Native exact replay & Five resume steps, three fresh-key promotion cases, and a four-hit soak & Unsplit reference, cold prime, exact replay hashes, latency, cache metadata, admission retries, and post-request memory samples. \\
 Native systems & Three quants, five step-cache points, one fused epilogue & Transformer iteration time, VRAM, failure status, PSNR, and sm\_120 kernel/reference timing. \\
 \bottomrule
 \end{tabularx}

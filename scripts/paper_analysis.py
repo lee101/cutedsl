@@ -209,6 +209,12 @@ def native_systems_ablation() -> dict:
     return raw or {}
 
 
+def native_resume_step_sweep() -> dict:
+    """Exact replay resume-step sweep and fresh-key promotion gate."""
+    raw = load_json(RESULTS / "native-resume-step-sweep-5090.json")
+    return raw or {}
+
+
 def tex_escape(text: str) -> str:
     return text.replace("_", r"\_").replace("%", r"\%").replace("&", r"\&")
 
@@ -425,6 +431,23 @@ def write_tables(data: dict, out_dir: Path) -> None:
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out_dir / "table_native_exact_replay.tex").write_text("\n".join(lines) + "\n")
 
+    resume = data.get("native_resume_step", {})
+    lines = [
+        r"\begin{tabular}{@{}rrrrr@{}}",
+        r"\toprule",
+        r"resume step & prime (s) & replay 1 (s) & replay 2 (s) & prime/median replay \\",
+        r"\midrule",
+    ]
+    for row in resume.get("resume_step_sweep", []):
+        replay = row["replay_ms"]
+        lines.append(
+            f"{row['resume_step']} & {row['prime_ms']/1000:.2f} & "
+            f"{replay[0]/1000:.2f} & {replay[1]/1000:.2f} & "
+            f"{row['prime_to_replay_speedup']:.3f}$\\times$ \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out_dir / "table_native_resume_step.tex").write_text("\n".join(lines) + "\n")
+
     systems = data.get("native_systems", {})
     quant = systems.get("quantization_3090", {})
     lines = [
@@ -551,6 +574,17 @@ def write_tables(data: dict, out_dir: Path) -> None:
             r"\newcommand{\NativeExactReplayPrompts}{%d}"
             % exact_summary["prompts"]
         )
+    promotion = data.get("native_resume_step", {}).get("fresh_key_step8_promotion", {})
+    if promotion:
+        macros.append(
+            r"\newcommand{\NativeLateReplaySpeedup}{%.3f}"
+            % promotion["median_prime_to_replay_speedup"]
+        )
+        macros.append(
+            r"\newcommand{\NativeLateReplayPrompts}{%d}"
+            % len(promotion["rows"])
+        )
+        macros.append(r"\newcommand{\NativeLateReplayStep}{8}")
     fused = data.get("native_systems", {}).get("fused_residual_rms_5090", {})
     if fused:
         macros.append(r"\newcommand{\FusedResidualSpeedup}{%.2f}" % fused["speedup"])
@@ -585,6 +619,7 @@ def main() -> int:
         "cache_adapter": cache_adapter(),
         "native_exact_replay": native_exact_replay(),
         "native_systems": native_systems_ablation(),
+        "native_resume_step": native_resume_step_sweep(),
     }
     out_dir = Path(args.out)
     write_tables(data, out_dir)
@@ -596,6 +631,7 @@ def main() -> int:
         "table_knn_ablation.tex, table_knn_horizon_grid.tex, "
         "table_knn_timing.tex, table_knn_visual.tex, "
         "table_cache_adapter.tex, table_native_exact_replay.tex, "
+        "table_native_resume_step.tex, "
         "table_native_quantization.tex, table_native_step_cache.tex, "
         "macros.tex, analysis.json"
     )

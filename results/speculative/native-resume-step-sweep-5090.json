@@ -1,0 +1,36 @@
+{
+  "protocol": {
+    "timestamp_utc": "2026-08-26T23:59:55Z",
+    "hardware": "NVIDIA GeForce RTX 5090 32 GB",
+    "service": "live shared omniserve-native Z-Image-Turbo Q4_K, 9 steps",
+    "sweep_case": "product_glass_robot at 512x512",
+    "sweep_replays_per_step": 2,
+    "promotion_cases": 3,
+    "promotion_replays_per_case": 1,
+    "prime_gate": "prime must be a cache miss; replay must be an exact cache hit",
+    "caveat": "Paired shared-load measurements; step ranking is supported by exactness and the fresh-key promotion run, not an idle-device throughput claim."
+  },
+  "resume_step_sweep": [
+    {"resume_step": 2, "prime_ms": 29117.108, "replay_ms": [27763.716, 23359.345], "median_replay_ms": 25561.5305, "prime_to_replay_speedup": 1.139098771883006, "passed": true},
+    {"resume_step": 4, "prime_ms": 24957.767, "replay_ms": [24313.935, 24094.275], "median_replay_ms": 24204.105, "prime_to_replay_speedup": 1.0311377760094826, "passed": true},
+    {"resume_step": 6, "prime_ms": 23458.273, "replay_ms": [18191.362, 17750.863], "median_replay_ms": 17971.1125, "prime_to_replay_speedup": 1.3053322658794773, "passed": true},
+    {"resume_step": 7, "prime_ms": 29449.832, "replay_ms": [21111.773, 19363.575], "median_replay_ms": 20237.674, "prime_to_replay_speedup": 1.455198458083671, "passed": true},
+    {"resume_step": 8, "prime_ms": 29400.524, "replay_ms": [17542.337, 20890.064], "median_replay_ms": 19216.2005, "prime_to_replay_speedup": 1.529986325860828, "passed": true}
+  ],
+  "fresh_key_step8_promotion": {
+    "seed_offset": 827000,
+    "artifact": "/sdb-disk/latentteleport-spec/native-resume-sweep/image_teleport_20260826T235559Z/report.json",
+    "passed": true,
+    "median_prime_to_replay_speedup": 1.4910845728485838,
+    "rows": [
+      {"id": "product_glass_robot", "size": "512x512", "seed": 831201, "prime_ms": 28788.317, "replay_ms": 21631.943, "speedup": 1.3308243739362664, "pixel_sha256": "96a024b736d8378a74d9181dda0930928903659b11e95feb30a980d14f1d1bc0", "passed": true},
+      {"id": "pixel_game_asset", "size": "512x512", "seed": 831202, "prime_ms": 29451.816, "replay_ms": 19751.942, "speedup": 1.4910845728485838, "pixel_sha256": "ea61fa7b29cc20663e21b1e68ea0a716183d1e4ea7b84b22f75caf5110583b44", "passed": true},
+      {"id": "portrait_hands", "size": "512x768", "seed": 831203, "prime_ms": 33073.478, "replay_ms": 20899.016, "speedup": 1.5825375701899076, "pixel_sha256": "2aaee9c35b7921feb0b8cd269295118bddc63759ce7b14a2ad95fe2fef2c788b", "passed": true}
+    ]
+  },
+  "decision": {
+    "default_resume_step": "steps-1",
+    "nine_step_profile_resume_step": 8,
+    "reason": "Latest exact state maximizes skipped work; all five sweep points and all three fresh-key promotion cases were pixel exact."
+  }
+}
