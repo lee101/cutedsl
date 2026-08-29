@@ -427,3 +427,34 @@ Store results in `experiments/results/` as JSONL files.
 3. Cache population + teleportation ablation (biggest potential speedup)
 4. Trained cache/compressed recalculation (research frontier)
 5. Additional kernel fusions (incremental gains)
+
+---
+
+## CuteAnima (Anima 2.9B) — first pass, August 2026
+
+**Hardware**: RTX 3090 Ti (sm_86), torch 2.8.0+cu128, diffusers 0.38.0, shared desktop GPU
+**Workload**: 832x1216, 28 steps, guidance 4.0, bf16, 3952 latent tokens after 2x2 patching, 40 layers, dim 2048
+
+| variant | latency (min of 2) | vs sequential CFG |
+| --- | --- | --- |
+| sequential CFG (reference loop) | 24.86 s | 1.00x |
+| batched CFG | 25.28 s | 0.98x |
+| batched CFG + fused adaLN/gated-residual Triton | 25.66 s | 0.97x |
+| sequential CFG + torch.compile (default mode) | 19.33 s | 1.29x |
+| batched CFG + fused + torch.compile (default mode) | 19.09 s | 1.30x |
+| batched CFG + torch.compile (max-autotune) | 18.54 s | 1.34x |
+
+**Findings**
+
+1. Anima at this resolution is GEMM-bound, not launch- or bandwidth-bound. Pointwise fusion of the three adaLN modulations and three gated residuals per block (120 kernel pairs per forward) does not show up in wall clock; it sits inside the +-5% run-to-run noise of a shared card.
+2. Batched classifier-free guidance is close to neutral here: -2% eager, +1.5% compiled. Both batch-1 GEMMs were already large enough to saturate the SMs. The gain observed against the *diffusers pipeline* came from caching prompt embeddings, not from batching.
+3. `torch.compile` is the only reliable win at 1.30-1.34x. `max-autotune` buys ~2% over `default` for roughly 2x the compile time, which only pays off when the inductor cache is exported and replayed.
+4. Cold-start compile is 91 s (default mode). Exporting `torch.compiler.save_cache_artifacts()` and replaying it in a fresh process cuts the first request from 110 s to 36 s; warm steady state is 19 s either way.
+5. Load path matters more than kernels for scale-to-zero: `meta` instantiation plus `assign=True` checkpoint adoption, and skipping the discarded 3.9 GB base transformer, took worker load from minutes (2.9B fp32 CPU init) to 6-20 s.
+
+**Next**
+
+- Test at 512x512 and 640x896, where the pointwise kernels should start to matter relative to smaller GEMMs.
+- Wrap the Triton kernels as `triton_op` so they compose with inductor instead of forcing a graph break inside the compiled path.
+- Evaluate int8 W8A8 (upstream ships `Anima-2.9B-preview-v1_int8_convrot.safetensors`) against the bf16 reference on real generations before claiming any quality parity.
+- Re-measure on sm_120 (prod RTX 5090) where fp8 GEMMs are available.

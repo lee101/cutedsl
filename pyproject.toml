@@ -33,6 +33,14 @@ zimage = [
     "accelerate>=1.0.0",
     "opencv-python-headless>=4.8.0",
 ]
+anima = [
+    "torchvision>=0.23.0,<0.24.0",
+    "diffusers>=0.38.0",
+    "transformers>=5.12.0",
+    "accelerate>=1.8.0",
+    "sentencepiece>=0.2.0",
+    "pillow>=11.0.0",
+]
 teleport = [
     "torchvision>=0.23.0,<0.24.0",
     "diffusers>=0.36.0",
@@ -68,6 +76,8 @@ cutedsl-benchmark = "cutechronos.benchmark:main"
 cutedsl-chronos-export-tensorrt = "cutechronos.export_tensorrt:main"
 cutedsl-parakeet-benchmark = "cuteparakeet.benchmark:main"
 cutedsl-parakeet-export-onnx = "cuteparakeet.export_onnx:main"
+cutedsl-cosyvoice-benchmark = "cutecosyvoice.benchmark_vc:main"
+cutedsl-cosyvoice-sweep-flow-steps = "cutecosyvoice.sweep_flow_steps:main"
 cutedsl-zimage-benchmark = "cutezimage.benchmark:main"
 cutedsl-zimage-sdcpp-benchmark = "zimageaccelerated.sdcpp_benchmark:main"
 cutedsl-zimageaccelerated-benchmark = "zimageaccelerated.benchmark:main"
@@ -89,7 +99,15 @@ cutedsl-sdxl-frontier = "diffusion_frontier.sdxl:main"
 cutedsl-consolidate-frontier = "diffusion_frontier.consolidate:main"
 
 [tool.setuptools.packages.find]
-include = ["cutechronos*", "cuteparakeet*", "cutezimage*", "zimageaccelerated*", "zimagecontrol*", "latentteleport*", "cuteloras*", "diffusion_frontier*"]
+include = ["cutechronos*", "cuteparakeet*", "cutecosyvoice*", "cuteanima*", "cutezimage*", "zimageaccelerated*", "zimagecontrol*", "latentteleport*", "cuteloras*", "diffusion_frontier*"]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "anima" },
+        { extra = "chronos" },
+    ],
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

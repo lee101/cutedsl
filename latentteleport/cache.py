@@ -590,6 +590,43 @@ class LatentCache:
             ),
         )
 
+    def record_prompt(
+        self,
+        prompt: str,
+        exact_unit: VisualUnit | None,
+        units: list[VisualUnit],
+        seed: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        steps: int | None = None,
+        metadata: dict | None = None,
+    ):
+        import hashlib
+
+        ph = hashlib.sha256(prompt.strip().lower().encode()).hexdigest()[:16]
+        conn = self._conn()
+        conn.execute(
+            """INSERT OR REPLACE INTO prompts
+               (prompt_hash, prompt, exact_unit_id, unit_ids, unit_texts,
+                seed, width, height, steps, created_at, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                ph,
+                prompt,
+                exact_unit.unit_id if exact_unit else None,
+                json.dumps([u.unit_id for u in units]),
+                json.dumps([u.text for u in units]),
+                seed,
+                width,
+                height,
+                steps,
+                time.time(),
+                json.dumps(metadata or {}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
     def load_latent(self, unit: VisualUnit, step_idx: int) -> torch.Tensor | None:
         d = self._unit_path(unit)
         path = d / "latents.safetensors"

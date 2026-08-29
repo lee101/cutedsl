@@ -464,6 +464,34 @@ python -m zimageaccelerated.sdcpp_benchmark \
 
 That writes a benchmark JSON file plus the generated image under `benchmark_images/sdcpp/`, and gives us a concrete baseline before attempting deeper C/CUDA rewrites of Z-Image-specific kernels or cache paths.
 
+## Third Model: CuteAnima
+
+[Anima 2.9B](https://huggingface.co/Gazingstars123/Anima-2.9B) is an anime/illustration diffusion transformer: a Cosmos Predict2 backbone (40 layers, dim 2048, 16 heads) expanded to 2.9B, with a Qwen3 text encoder and an LLM adapter that cross-attends T5 token embeddings. CuteAnima keeps the reference numerics and attacks the parts around the GEMMs:
+
+- **Meta-device load**: the reference randomly initialises 2.9B fp32 parameters on CPU before overwriting them, and separately loads a 3.9 GB base transformer it then discards. CuteAnima instantiates on `meta`, adopts the bf16 checkpoint with `assign=True`, and never reads the base transformer - load drops from minutes to ~6-20 s.
+- **Batched classifier-free guidance**: one batch-2 transformer call per step instead of two batch-1 calls.
+- **Fused adaLN modulation**: LayerNorm + `(1 + scale) * x + shift` in one Triton pass, and a fused `x + gate * delta` residual. Each block runs that pair three times.
+- **Prompt-embedding cache**: production traffic reuses one negative prompt, so it is encoded once.
+
+Measured on an RTX 3090 Ti at 832x1216, 28 steps, guidance 4.0, bf16, minimum of two runs on a shared desktop GPU (`python -m cuteanima.benchmark`):
+
+| variant | latency | vs sequential CFG | PSNR vs reference |
+| --- | --- | --- | --- |
+| sequential CFG (reference loop) | 24.9 s | 1.00x | - |
+| batched CFG | 25.3 s | 0.98x | 35.0 dB |
+| batched CFG + fused kernels | 25.7 s | 0.97x | 35.7 dB |
+| sequential CFG + `torch.compile` | 19.3 s | 1.29x | - |
+| batched CFG + fused + `torch.compile` | 19.1 s | 1.30x | 31.2 dB |
+
+The honest read: at this resolution Anima is GEMM-bound, so the pointwise fusions land inside run-to-run noise and only `torch.compile` moves the wall clock. The fused kernels are kept because they are the layer that matters at small resolutions and for the compile-free path, and `benchmark_kernels.py` reports their isolated numbers. PSNR differences are floating-point association, not quality: the images are the same picture from the same seed.
+
+```bash
+uv pip install -e '.[anima]'
+python -m cuteanima.benchmark --variants reference batched fused fused_compile --repeat 2
+python -m cuteanima.benchmark_kernels
+pytest cuteanima/tests -q
+```
+
 ## Project Structure
 
 ```
@@ -506,6 +534,16 @@ cutedsl/
     tests/
       test_model.py       # Model component tests
       test_kernels.py     # Triton kernel correctness tests
+  cuteanima/
+    loader.py             # Meta-device Anima 2.9B load + pinned reference pipeline
+    runner.py             # Batched-CFG denoise loop + prompt-embedding cache
+    patch.py              # Binds fused block forward onto Cosmos blocks
+    benchmark.py          # End-to-end variants + image quality metrics
+    benchmark_kernels.py  # Isolated kernel timings
+    triton_kernels/
+      fused_adaln.py      # adaLN modulation + gated residual
+    tests/
+      test_kernels.py     # Kernel equivalence vs PyTorch reference
 ```
 
 ## Adding New Models
