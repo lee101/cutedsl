@@ -338,6 +338,34 @@ class TestCuteZImageTransformerForward:
         assert "sample" in out
         assert len(out["sample"]) == 1
 
+    def test_regional_compile_targets_only_repeated_blocks(self, small_model, monkeypatch):
+        calls = []
+
+        def fake_compile(function, *, mode, fullgraph):
+            calls.append((function, mode, fullgraph))
+            return function
+
+        monkeypatch.setattr(torch, "compile", fake_compile)
+        count = small_model.compile_repeated_blocks(mode="max-autotune")
+
+        assert count == 4
+        assert len(calls) == 4
+        assert all(mode == "max-autotune" and fullgraph is False
+                   for _, mode, fullgraph in calls)
+
+    def test_regional_compile_mode_uses_default_inductor_mode(self, small_model, monkeypatch):
+        calls = []
+
+        def fake_compile(function, *, mode, fullgraph):
+            calls.append((mode, fullgraph))
+            return function
+
+        monkeypatch.setattr(torch, "compile", fake_compile)
+        result = CuteZImageTransformer._apply_compile(small_model, "regional")
+
+        assert result is small_model
+        assert calls == [("reduce-overhead", False)] * 4
+
 
 class TestADALNDim:
     """Verify ADALN_EMBED_DIM matches diffusers (256, not 3072)."""

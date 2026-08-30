@@ -1101,6 +1101,56 @@ class CuteZImageTransformer(nn.Module):
     def parameter_count(self) -> int:
         return sum(p.numel() for p in self.parameters())
 
+    def compile_repeated_blocks(
+        self,
+        mode: str = "reduce-overhead",
+        *,
+        fullgraph: bool = False,
+    ) -> int:
+        """Compile repeated transformer blocks while leaving orchestration eager.
+
+        The three block lists contain the expensive repeated regions. Compiling
+        them independently lets Inductor reuse its code cache across layers and
+        avoids putting patchification and variable-length list handling in the
+        initial graph. This is selected with ``compile_mode="regional"`` or
+        ``"regional:<torch mode>"``.
+        """
+        if not hasattr(torch, "compile"):
+            return 0
+        compiled = 0
+        for blocks in (self.noise_refiner, self.context_refiner, self.layers):
+            for block in blocks:
+                block.forward = torch.compile(  # type: ignore[assignment]
+                    block.forward,
+                    mode=mode,
+                    fullgraph=fullgraph,
+                )
+                compiled += 1
+        return compiled
+
+    @staticmethod
+    def _apply_compile(
+        model: "CuteZImageTransformer",
+        compile_mode: str,
+    ) -> "CuteZImageTransformer":
+        if not hasattr(torch, "compile"):
+            return model
+        try:
+            if compile_mode == "regional" or compile_mode.startswith("regional:"):
+                mode = compile_mode.partition(":")[2] or "reduce-overhead"
+                count = model.compile_repeated_blocks(mode=mode)
+                print(f"[cutezimage] regional torch.compile enabled ({count} blocks, mode={mode}).")
+            else:
+                model.forward = torch.compile(  # type: ignore[assignment]
+                    model.forward,
+                    mode=compile_mode,
+                    fullgraph=False,
+                )
+                print(f"[cutezimage] torch.compile enabled (mode={compile_mode}).")
+        except Exception as exc:
+            print(f"[cutezimage] torch.compile failed ({exc}); using eager mode.")
+        return model
+
     @classmethod
     def from_diffusers_compiled(
         cls,
@@ -1120,17 +1170,7 @@ class CuteZImageTransformer(nn.Module):
             Compiled CuteZImageTransformer.
         """
         cute = cls.from_diffusers(model)
-        if hasattr(torch, "compile"):
-            try:
-                cute.forward = torch.compile(  # type: ignore[assignment]
-                    cute.forward,
-                    mode=compile_mode,
-                    fullgraph=False,
-                )
-                print(f"[cutezimage] torch.compile enabled (mode={compile_mode}).")
-            except Exception as exc:
-                print(f"[cutezimage] torch.compile failed ({exc}); using eager mode.")
-        return cute
+        return cls._apply_compile(cute, compile_mode)
 
     @classmethod
     def from_diffusers_accelerated(

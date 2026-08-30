@@ -437,12 +437,20 @@ class AcceleratedZImageTransformer(CuteZImageTransformer):
     ) -> "AcceleratedZImageTransformer":
         if hasattr(torch, "compile"):
             try:
-                model.forward = torch.compile(  # type: ignore[assignment]
-                    model.forward,
-                    mode=compile_mode,
-                    fullgraph=False,
-                )
-                print(f"[zimageaccelerated] torch.compile enabled (mode={compile_mode}).")
+                if compile_mode == "regional" or compile_mode.startswith("regional:"):
+                    mode = compile_mode.partition(":")[2] or "reduce-overhead"
+                    count = model.compile_repeated_blocks(mode=mode)
+                    print(
+                        f"[zimageaccelerated] regional torch.compile enabled "
+                        f"({count} blocks, mode={mode})."
+                    )
+                else:
+                    model.forward = torch.compile(  # type: ignore[assignment]
+                        model.forward,
+                        mode=compile_mode,
+                        fullgraph=False,
+                    )
+                    print(f"[zimageaccelerated] torch.compile enabled (mode={compile_mode}).")
             except Exception as exc:
                 print(f"[zimageaccelerated] torch.compile failed ({exc}); using eager mode.")
         return model

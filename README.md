@@ -428,9 +428,16 @@ The compiled mode uses `torch.compile(mode="reduce-overhead")` which captures CU
 - **Complex-valued RoPE kernel**: Fused reshape + complex multiply + flatten
 - **RMS LayerNorm kernel**: Triton-accelerated T5-style normalization
 - **PyTorch SDPA attention**: Leverages FlashAttention v2 automatically
+- **Regional torch.compile**: Compiles the repeated refiner/transformer blocks
+  without placing variable-length pipeline orchestration in the initial graph
 - **from_diffusers() weight loading**: Load from any HuggingFace Z-Image checkpoint
 
 Architecture: 30 main layers + 2 refiner layers, dim=3840, 30 heads, SiLU-gated FFN (hidden=10240).
+
+Set `ZIMAGE_COMPILE_MODE=regional` for `reduce-overhead` regional compilation,
+or use `regional:max-autotune` for a longer compile with additional tuning.
+Whole-transformer modes such as `default` and `reduce-overhead` remain
+backward-compatible.
 
 The output-epilogue candidate is opt-in while it completes deployment-GPU
 quality and latency qualification:
