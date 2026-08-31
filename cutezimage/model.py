@@ -658,6 +658,10 @@ class CuteZImageTransformer(nn.Module):
         super().__init__()
         self.config = config
         self.in_channels = config.in_channels
+        # Regional compilation uses CUDA graphs for each repeated block.  The
+        # marker is enabled only for that path so eager and whole-model
+        # compilation retain their existing behavior.
+        self._regional_compile_enabled = False
 
         # Patch embedding
         patch_dim = config.f_patch_size * config.patch_size * config.patch_size * config.in_channels
@@ -934,6 +938,19 @@ class CuteZImageTransformer(nn.Module):
         cap_feats : list of (seq_len, cap_feat_dim) tensors
             Caption features from text encoder.
         """
+        if self._regional_compile_enabled:
+            mark_step_begin = getattr(
+                getattr(torch, "compiler", None),
+                "cudagraph_mark_step_begin",
+                None,
+            )
+            if mark_step_begin is not None:
+                # Each denoiser invocation owns one CUDA-graph step.  Without
+                # this boundary, a later compiled block may overwrite an
+                # earlier block's output before the eager orchestration has
+                # consumed it.
+                mark_step_begin()
+
         if patch_size is None:
             patch_size = self.config.patch_size
         if f_patch_size is None:
@@ -1139,6 +1156,7 @@ class CuteZImageTransformer(nn.Module):
             if compile_mode == "regional" or compile_mode.startswith("regional:"):
                 mode = compile_mode.partition(":")[2] or "reduce-overhead"
                 count = model.compile_repeated_blocks(mode=mode)
+                model._regional_compile_enabled = True
                 print(f"[cutezimage] regional torch.compile enabled ({count} blocks, mode={mode}).")
             else:
                 model.forward = torch.compile(  # type: ignore[assignment]

@@ -440,6 +440,7 @@ class AcceleratedZImageTransformer(CuteZImageTransformer):
                 if compile_mode == "regional" or compile_mode.startswith("regional:"):
                     mode = compile_mode.partition(":")[2] or "reduce-overhead"
                     count = model.compile_repeated_blocks(mode=mode)
+                    model._regional_compile_enabled = True
                     print(
                         f"[zimageaccelerated] regional torch.compile enabled "
                         f"({count} blocks, mode={mode})."

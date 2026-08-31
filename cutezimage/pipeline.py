@@ -50,7 +50,11 @@ except ImportError:  # pragma: no cover - depends on optional deps
 ZIMAGE_MODEL_PATH = os.getenv("ZIMAGE_MODEL_PATH", "Tongyi-MAI/Z-Image-Turbo")
 ZIMAGE_TURBO_STEPS = int(os.getenv("ZIMAGE_TURBO_STEPS", "9"))
 ZIMAGE_TURBO_GUIDANCE_SCALE = float(os.getenv("ZIMAGE_TURBO_GUIDANCE_SCALE", "0.0"))
-ZIMAGE_COMPILE_MODE = os.getenv("ZIMAGE_COMPILE_MODE", "reduce-overhead") or None
+# Regional compilation keeps the variable-length pipeline orchestration eager
+# and places an explicit CUDA-graph boundary around each denoiser invocation.
+# Whole-transformer reduce-overhead compilation is still available explicitly,
+# but is not safe as the default because the model returns Python lists.
+ZIMAGE_COMPILE_MODE = os.getenv("ZIMAGE_COMPILE_MODE", "regional") or None
 ZIMAGE_CONTROLNET_MODEL_PATH = os.getenv("ZIMAGE_CONTROLNET_MODEL_PATH")
 ZIMAGE_CONTROLNET_FILENAME = os.getenv("ZIMAGE_CONTROLNET_FILENAME")
 

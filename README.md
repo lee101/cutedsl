@@ -434,10 +434,20 @@ The compiled mode uses `torch.compile(mode="reduce-overhead")` which captures CU
 
 Architecture: 30 main layers + 2 refiner layers, dim=3840, 30 heads, SiLU-gated FFN (hidden=10240).
 
-Set `ZIMAGE_COMPILE_MODE=regional` for `reduce-overhead` regional compilation,
-or use `regional:max-autotune` for a longer compile with additional tuning.
-Whole-transformer modes such as `default` and `reduce-overhead` remain
-backward-compatible.
+The pipeline defaults to `ZIMAGE_COMPILE_MODE=regional`, which keeps the
+variable-length orchestration eager and compiles the repeated denoiser blocks.
+Use `regional:max-autotune` for a longer compile with additional tuning. Whole-
+transformer modes remain available explicitly, but regional compilation is the
+safe production setting because the model returns Python lists and uses custom
+CUDA ops.
+
+For quality-preserving fresh generations, keep the default accelerated QKV path
+and automatic SDPA, leave `CUTEZIMAGE_USE_TRITON_ROPE=0` and
+`CUTEZIMAGE_FUSED_RESIDUAL=0`, and do not enable latent teleportation/Taylor
+skips. The latter are useful research controls, but the 16-step image sweep
+shows visible retention loss even at k=1. Use the cache adapter only for its
+validated offline cache procedure, or use exact replay for an identical cached
+request.
 
 The output-epilogue candidate is opt-in while it completes deployment-GPU
 quality and latency qualification:

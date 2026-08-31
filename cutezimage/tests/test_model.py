@@ -366,6 +366,23 @@ class TestCuteZImageTransformerForward:
         assert result is small_model
         assert calls == [("reduce-overhead", False)] * 4
 
+    def test_regional_compile_marks_each_model_invocation(self, small_model, monkeypatch):
+        markers = []
+
+        def fake_compile(function, *, mode, fullgraph):
+            return function
+
+        monkeypatch.setattr(torch, "compile", fake_compile)
+        monkeypatch.setattr(torch.compiler, "cudagraph_mark_step_begin", lambda: markers.append(True))
+        CuteZImageTransformer._apply_compile(small_model, "regional")
+
+        x = [torch.randn(4, 1, 16, 16)]
+        t = torch.tensor([0.5])
+        cap_feats = [torch.randn(10, 64)]
+        small_model(x, t, cap_feats, return_dict=False)
+
+        assert markers == [True]
+
 
 class TestADALNDim:
     """Verify ADALN_EMBED_DIM matches diffusers (256, not 3072)."""

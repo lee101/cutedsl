@@ -201,3 +201,25 @@ def test_accelerated_transformer_direct_from_diffusers_matches_two_step_path():
 
     for direct_param, via_cute_param in zip(direct.parameters(), via_cute.parameters()):
         assert torch.allclose(direct_param, via_cute_param)
+
+
+def test_accelerated_regional_compile_enables_cudagraph_boundary(monkeypatch):
+    config = CuteZImageConfig(
+        patch_size=2,
+        f_patch_size=1,
+        in_channels=4,
+        dim=128,
+        n_layers=2,
+        n_refiner_layers=1,
+        n_heads=4,
+        n_kv_heads=4,
+        cap_feat_dim=64,
+        axes_dims=[8, 12, 12],
+        axes_lens=[256, 128, 128],
+    )
+    model = AcceleratedZImageTransformer(config).eval()
+
+    monkeypatch.setattr(torch, "compile", lambda function, *, mode, fullgraph: function)
+    model._apply_compile(model, "regional")
+
+    assert model._regional_compile_enabled is True
