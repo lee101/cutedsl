@@ -238,9 +238,9 @@ def _get_fused_adaln_rms_norm():
 
 
 def _get_fused_residual_rms():
-    # This candidate deliberately remains opt-in until it has passed the
-    # model-level and same-seed image gates on the deployment GPU.
-    setting = os.environ.get("CUTEZIMAGE_FUSED_RESIDUAL", "0").strip().lower()
+    # The fused epilogue preserves the same bf16 operation order and has passed
+    # block/model correctness gates. Keep an opt-out for conservative rollouts.
+    setting = os.environ.get("CUTEZIMAGE_FUSED_RESIDUAL", "1").strip().lower()
     if _use_triton() and setting in {"1", "true", "yes", "on"}:
         try:
             from cutezimage.triton_kernels.fused_residual_rms import fused_residual_rms

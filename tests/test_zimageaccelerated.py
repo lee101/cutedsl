@@ -104,6 +104,29 @@ def test_accelerated_block_matches_baseline_non_modulated():
     assert torch.allclose(baseline_out, accelerated_out, atol=1e-5, rtol=1e-5)
 
 
+def test_accelerated_block_uses_shared_residual_epilogue(monkeypatch):
+    block = AcceleratedZImageTransformerBlock(
+        layer_id=0,
+        dim=32,
+        n_heads=4,
+        n_kv_heads=4,
+        modulation=False,
+    ).eval()
+    calls = []
+
+    def fake_update(residual, branch, norm, gate=None):
+        calls.append((branch, norm, gate))
+        return residual + norm(branch)
+
+    monkeypatch.setattr("zimageaccelerated.model._residual_rms_update", fake_update)
+
+    with torch.no_grad():
+        out = block(torch.randn(1, 4, 32))
+
+    assert out.shape == (1, 4, 32)
+    assert len(calls) == 2
+
+
 def test_accelerated_block_matches_baseline_modulated():
     torch.manual_seed(0)
     baseline = CuteZImageTransformerBlock(

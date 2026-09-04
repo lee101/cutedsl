@@ -21,6 +21,7 @@ from cutezimage.model import (
     _get_fused_adaln_rms_norm,
     _get_fused_qk_norm,
     _get_rope_complex,
+    _residual_rms_update,
 )
 
 
@@ -235,8 +236,9 @@ class AcceleratedZImageTransformerBlock(nn.Module):
 
                 normed = self.attention_norm1(x) * scale_msa
                 attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-                x = x + gate_msa * self.attention_norm2(attn_out)
-                x = x + gate_mlp * self.ffn_norm2(self.feed_forward(self.ffn_norm1(x) * scale_mlp))
+                x = _residual_rms_update(x, attn_out, self.attention_norm2, gate_msa)
+                ffn_out = self.feed_forward(self.ffn_norm1(x) * scale_mlp)
+                x = _residual_rms_update(x, ffn_out, self.ffn_norm2, gate_mlp)
             else:
                 mod = self.adaLN_modulation(adaln_input)
                 scale_msa, gate_msa, scale_mlp, gate_mlp = mod.unsqueeze(1).chunk(4, dim=2)
@@ -251,18 +253,20 @@ class AcceleratedZImageTransformerBlock(nn.Module):
                 else:
                     normed = self.attention_norm1(x) * scale_msa
                 attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-                x = x + gate_msa * self.attention_norm2(attn_out)
+                x = _residual_rms_update(x, attn_out, self.attention_norm2, gate_msa)
 
                 if fused_adaln is not None:
                     ffn_input = fused_adaln(x, scale_mlp.squeeze(1), self.ffn_norm1.weight, eps=self.ffn_norm1.eps)
                 else:
                     ffn_input = self.ffn_norm1(x) * scale_mlp
-                x = x + gate_mlp * self.ffn_norm2(self.feed_forward(ffn_input))
+                ffn_out = self.feed_forward(ffn_input)
+                x = _residual_rms_update(x, ffn_out, self.ffn_norm2, gate_mlp)
         else:
             normed = self.attention_norm1(x)
             attn_out = self._apply_attention(normed, attn_mask, freqs_cis)
-            x = x + self.attention_norm2(attn_out)
-            x = x + self.ffn_norm2(self.feed_forward(self.ffn_norm1(x)))
+            x = _residual_rms_update(x, attn_out, self.attention_norm2)
+            ffn_out = self.feed_forward(self.ffn_norm1(x))
+            x = _residual_rms_update(x, ffn_out, self.ffn_norm2)
 
         return x
 
