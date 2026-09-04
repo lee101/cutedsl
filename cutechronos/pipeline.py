@@ -199,6 +199,7 @@ def _load_model_cute(
     dtype: torch.dtype = torch.bfloat16,
     compile_mode: str | None = None,
     turboquant_bits: int | None = None,
+    adapter_path: str | None = None,
 ):
     """Load via CuteChronos2Model (no upstream dependency for inference).
 
@@ -224,11 +225,14 @@ def _load_model_cute(
             local_path,
             compile_mode=compile_mode,
             tq_bits=turboquant_bits,
+            adapter_path=adapter_path,
         )
     elif compile_mode:
-        model = CuteChronos2Model.from_pretrained_compiled(local_path, compile_mode=compile_mode)
+        model = CuteChronos2Model.from_pretrained_compiled(
+            local_path, compile_mode=compile_mode, adapter_path=adapter_path
+        )
     else:
-        model = CuteChronos2Model.from_pretrained(local_path)
+        model = CuteChronos2Model.from_pretrained(local_path, adapter_path=adapter_path)
         if turboquant_bits:
             model.enable_turboquant_kv(bits=turboquant_bits)
 
@@ -329,6 +333,7 @@ class CuteChronos2Pipeline:
         use_cute: bool = True,
         compile_mode: str | None = None,
         turboquant_bits: int | None = None,
+        adapter_path: str | None = None,
     ) -> "CuteChronos2Pipeline":
         """Load a Chronos-2 model and wrap it in a CuteChronos2Pipeline.
 
@@ -351,14 +356,22 @@ class CuteChronos2Pipeline:
             bit-width. Quantizers are attached before torch.compile so
             encode/decode ops can be captured in CUDA graphs. Only effective
             when ``use_cute=True``.
+        adapter_path
+            Optional path to a LoRA adapter directory; merged into the base
+            weights at load time. Only supported when ``use_cute=True``
+            (adapters inside ``model_path`` are still auto-detected either way
+            by the cute loader).
         """
         if use_cute:
             model = _load_model_cute(
                 model_path, device=device, dtype=dtype,
                 compile_mode=compile_mode, turboquant_bits=turboquant_bits,
+                adapter_path=adapter_path,
             )
             return cls(model, device=device, _is_cute=True)
         else:
+            if adapter_path is not None:
+                raise NotImplementedError("adapter_path requires use_cute=True")
             model = _load_model_original(model_path, device=device, dtype=dtype)
             return cls(model, device=device, _is_cute=False)
 

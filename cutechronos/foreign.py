@@ -29,6 +29,7 @@ _DTYPE_MAP = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
 }
+_MEDIAN_QUANTILE_LEVELS = [0.5]
 
 
 @dataclass
@@ -80,6 +81,10 @@ def _resolve_device(device: str | None) -> str:
 def _sync_if_needed(device: str) -> None:
     if device.startswith("cuda") and torch.cuda.is_available():
         torch.cuda.synchronize()
+
+
+def _tensor_from_float_buffer(buffer: memoryview, count: int) -> torch.Tensor:
+    return torch.frombuffer(buffer, dtype=torch.float32, count=count)
 
 
 def init_pipeline(
@@ -151,6 +156,42 @@ def predict_median(
     """Run one inference and return ``(forecast, latency_ms)``."""
     return predict_quantile(handle, context_values, prediction_length, 0.5)
 
+@torch.inference_mode()
+def predict_median_into(
+    handle: int,
+    context_buffer: memoryview,
+    context_length: int,
+    prediction_length: int,
+    out_buffer: memoryview,
+) -> tuple[int, float]:
+    """Run median inference and write the forecast directly into ``out_buffer``."""
+    session = _PIPELINES[handle]
+    context = _tensor_from_float_buffer(context_buffer, context_length)
+
+    _sync_if_needed(session.device)
+    start = time.perf_counter()
+
+    if session.backend == "cute":
+        quantiles, _ = session.pipeline.predict_quantiles(
+            context,
+            prediction_length=prediction_length,
+            quantile_levels=_MEDIAN_QUANTILE_LEVELS,
+        )
+    else:
+        quantiles, _ = session.pipeline.predict_quantiles(
+            [context],
+            prediction_length=prediction_length,
+            quantile_levels=_MEDIAN_QUANTILE_LEVELS,
+        )
+
+    forecast_len = int(quantiles[0].shape[1])
+    out = _tensor_from_float_buffer(out_buffer, forecast_len)
+    out.copy_(quantiles[0][0, :, 0])
+
+    _sync_if_needed(session.device)
+    end = time.perf_counter()
+    return forecast_len, (end - start) * 1000.0
+
 
 def predict_quantile(
     handle: int,
@@ -196,4 +237,5 @@ __all__ = [
     "init_pipeline",
     "predict_quantile",
     "predict_median",
+    "predict_median_into",
 ]

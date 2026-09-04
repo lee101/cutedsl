@@ -23,7 +23,7 @@ static int g_python_ready = 0;
 static int g_embedded_python = 0;
 static PyObject *g_module = NULL;
 static PyObject *g_init_func = NULL;
-static PyObject *g_predict_func = NULL;
+static PyObject *g_predict_into_func = NULL;
 static PyObject *g_destroy_func = NULL;
 
 static void set_error(char *buffer, size_t buffer_size, const char *message) {
@@ -127,9 +127,9 @@ static int ensure_python(char *error_buffer, size_t error_buffer_size) {
         }
 
         g_init_func = PyObject_GetAttrString(g_module, "init_pipeline");
-        g_predict_func = PyObject_GetAttrString(g_module, "predict_median");
+        g_predict_into_func = PyObject_GetAttrString(g_module, "predict_median_into");
         g_destroy_func = PyObject_GetAttrString(g_module, "destroy_pipeline");
-        if (g_init_func == NULL || g_predict_func == NULL || g_destroy_func == NULL) {
+        if (g_init_func == NULL || g_predict_into_func == NULL || g_destroy_func == NULL) {
             set_python_exception(error_buffer, error_buffer_size);
             PyGILState_Release(existing_gstate);
             return -1;
@@ -180,9 +180,9 @@ static int ensure_python(char *error_buffer, size_t error_buffer_size) {
     }
 
     g_init_func = PyObject_GetAttrString(g_module, "init_pipeline");
-    g_predict_func = PyObject_GetAttrString(g_module, "predict_median");
+    g_predict_into_func = PyObject_GetAttrString(g_module, "predict_median_into");
     g_destroy_func = PyObject_GetAttrString(g_module, "destroy_pipeline");
-    if (g_init_func == NULL || g_predict_func == NULL || g_destroy_func == NULL) {
+    if (g_init_func == NULL || g_predict_into_func == NULL || g_destroy_func == NULL) {
         set_python_exception(error_buffer, error_buffer_size);
         return -1;
     }
@@ -295,83 +295,47 @@ int cutechronos_predict_median(
     }
 
     PyGILState_STATE gstate = PyGILState_Ensure();
-    PyObject *context_list = PyList_New((Py_ssize_t)context_length);
-    if (context_list == NULL) {
+    PyObject *context_view = PyMemoryView_FromMemory((char *)context, (Py_ssize_t)context_length * (Py_ssize_t)sizeof(float), PyBUF_READ);
+    if (context_view == NULL) {
         set_python_exception(error_buffer, error_buffer_size);
         PyGILState_Release(gstate);
         return -1;
     }
 
-    for (int i = 0; i < context_length; ++i) {
-        PyObject *value = PyFloat_FromDouble((double)context[i]);
-        if (value == NULL) {
-            Py_DECREF(context_list);
-            set_python_exception(error_buffer, error_buffer_size);
-            PyGILState_Release(gstate);
-            return -1;
-        }
-        PyList_SET_ITEM(context_list, i, value);
-    }
-
-    PyObject *args = Py_BuildValue("(iOi)", handle, context_list, prediction_length);
-    Py_DECREF(context_list);
-    if (args == NULL) {
+    PyObject *out_view = PyMemoryView_FromMemory((char *)out_values, (Py_ssize_t)out_capacity * (Py_ssize_t)sizeof(float), PyBUF_WRITE);
+    if (out_view == NULL) {
+        Py_DECREF(context_view);
         set_python_exception(error_buffer, error_buffer_size);
         PyGILState_Release(gstate);
         return -1;
     }
 
-    PyObject *result = PyObject_CallObject(g_predict_func, args);
-    Py_DECREF(args);
+    PyObject *result = PyObject_CallFunction(g_predict_into_func, "iOiOO", handle, context_view, context_length, prediction_length, out_view);
+    Py_DECREF(context_view);
+    Py_DECREF(out_view);
     if (result == NULL) {
         set_python_exception(error_buffer, error_buffer_size);
         PyGILState_Release(gstate);
         return -1;
     }
 
-    PyObject *forecast = NULL;
-    PyObject *latency = NULL;
-    if (!PyArg_ParseTuple(result, "OO", &forecast, &latency)) {
+    int forecast_len = 0;
+    double latency = 0.0;
+    if (!PyArg_ParseTuple(result, "id", &forecast_len, &latency)) {
         Py_DECREF(result);
         set_python_exception(error_buffer, error_buffer_size);
         PyGILState_Release(gstate);
         return -1;
     }
-
-    Py_ssize_t forecast_len = PySequence_Size(forecast);
-    if (forecast_len < 0) {
-        Py_DECREF(result);
-        set_python_exception(error_buffer, error_buffer_size);
-        PyGILState_Release(gstate);
-        return -1;
-    }
-    if ((int)forecast_len > out_capacity) {
+    if (forecast_len > out_capacity) {
         Py_DECREF(result);
         set_error(error_buffer, error_buffer_size, "forecast buffer too small");
         PyGILState_Release(gstate);
         return -1;
     }
 
-    for (Py_ssize_t i = 0; i < forecast_len; ++i) {
-        PyObject *item = PySequence_GetItem(forecast, i);
-        if (item == NULL) {
-            Py_DECREF(result);
-            set_python_exception(error_buffer, error_buffer_size);
-            PyGILState_Release(gstate);
-            return -1;
-        }
-        out_values[i] = (float)PyFloat_AsDouble(item);
-        Py_DECREF(item);
-        if (PyErr_Occurred()) {
-            Py_DECREF(result);
-            set_python_exception(error_buffer, error_buffer_size);
-            PyGILState_Release(gstate);
-            return -1;
-        }
-    }
-
-    *out_length = (int)forecast_len;
-    *out_latency_ms = PyFloat_AsDouble(latency);
+    *out_length = forecast_len;
+    *out_latency_ms = latency;
     Py_DECREF(result);
 
     if (PyErr_Occurred()) {

@@ -324,3 +324,52 @@ class TestRealAdapter:
         assert cfg["r"] == 16
         assert cfg["lora_alpha"] == 32
         assert set(cfg["target_modules"]) == {"q", "k", "v", "o"}
+
+
+class TestPipelineAdapterPath:
+    def test_pipeline_from_pretrained_adapter_path(self):
+        """CuteChronos2Pipeline.from_pretrained should plumb adapter_path through."""
+        torch.manual_seed(0)
+        model_base = _make_small_model()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = Path(tmpdir) / "model"
+            model_dir.mkdir()
+            config_dict = {
+                "d_model": 64, "d_kv": 16, "d_ff": 128, "num_layers": 2, "num_heads": 4,
+                "dropout_rate": 0.0, "layer_norm_epsilon": 1e-6, "dense_act_fn": "relu",
+                "rope_theta": 10000.0, "vocab_size": 2,
+                "chronos_config": {
+                    "context_length": 64, "input_patch_size": 8, "input_patch_stride": 8,
+                    "output_patch_size": 8, "use_reg_token": True, "use_arcsinh": True,
+                },
+            }
+            with open(model_dir / "config.json", "w") as f:
+                json.dump(config_dict, f)
+            _save_as_chronos2_checkpoint(model_base, model_dir)
+            adapter_dir = _create_mock_adapter(tmpdir, num_layers=2, d_model=64)
+
+            from cutechronos.pipeline import CuteChronos2Pipeline
+
+            pipe = CuteChronos2Pipeline.from_pretrained(
+                str(model_dir), device="cpu", dtype=torch.float32,
+                adapter_path=str(adapter_dir),
+            )
+            base = CuteChronos2Pipeline.from_pretrained(
+                str(model_dir), device="cpu", dtype=torch.float32,
+            )
+
+        assert not torch.equal(
+            pipe.model.blocks[0].time_attn.q.weight,
+            base.model.blocks[0].time_attn.q.weight,
+        )
+
+    def test_pipeline_adapter_path_requires_cute(self):
+        import pytest as _pytest
+
+        from cutechronos.pipeline import CuteChronos2Pipeline
+
+        with _pytest.raises(NotImplementedError):
+            CuteChronos2Pipeline.from_pretrained(
+                "amazon/chronos-2", use_cute=False, adapter_path="/nonexistent",
+            )
